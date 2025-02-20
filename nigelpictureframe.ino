@@ -216,6 +216,7 @@ void initTime(String timezone) {
 }
 
 void startWifi() {
+  display.setTextSize(2);
   display.setPartialWindow(0, 0, display.width(), display.height());
   display.setCursor(0, 0);
   display.firstPage();
@@ -235,28 +236,32 @@ void startWifi() {
   }
 
   if (WiFi.status() == WL_CONNECTED) {
+    display.println("");
     display.print("Connected. Getting time...");
   } else {
     display.print("Connection timed out. :(");
   }
   display.display(true);
+  display.setTextSize(1);
   initTime("EST5EDT,M3.2.0,M11.1.0");
   Blynk.config(auth, IPAddress(192, 168, 50, 197), 8080);
   Blynk.connect();
   while ((!Blynk.connected()) && (millis() < 20000)) {
     delay(500);
   }
-  if (WiFi.status() == WL_CONNECTED) { Blynk.run(); }
+  Blynk.run();
   Blynk.virtualWrite(V111, t);
-  if (WiFi.status() == WL_CONNECTED) { Blynk.run(); }
+  Blynk.run();
   Blynk.virtualWrite(V112, h);
-  if (WiFi.status() == WL_CONNECTED) { Blynk.run(); }
+  Blynk.run();
   Blynk.virtualWrite(V113, pres);
-  if (WiFi.status() == WL_CONNECTED) { Blynk.run(); }
+  Blynk.run();
   Blynk.virtualWrite(V114, abshum);
-  if (WiFi.status() == WL_CONNECTED) { Blynk.run(); }
+  Blynk.run();
   Blynk.virtualWrite(V115, vBat);
-  if (WiFi.status() == WL_CONNECTED) { Blynk.run(); }
+  Blynk.run();
+  Blynk.virtualWrite(V115, vBat);
+  Blynk.run();
 
   struct tm timeinfo;
   getLocalTime(&timeinfo);
@@ -355,7 +360,8 @@ double mapf(float x, float in_min, float in_max, float out_min, float out_max) {
   return (x - in_min) * (out_max - out_min) / (in_max - in_min) + out_min;
 }
 
-const char* calendarURL = "https://script.googleusercontent.com/macros/echo?user_content_key=xxxxxxxxxxxxxxxxxxxxxx"
+const char* calendarURL = "https://script.googleusercontent.com/macros/echo?user_content_key=xxxxxxxxx";
+
 void drawSensorCell(int xStart, int xEnd, int y, const char* title, float value, bool drawDegree, const char* unit, bool roundValue = false) {
   display.setFont(&FreeSans9pt7b);
   
@@ -572,7 +578,7 @@ void doHumDisplay() {
 }
 
 void doMainDisplay() {
-      Blynk.syncVirtual(V41);
+    Blynk.syncVirtual(V41);
     Blynk.syncVirtual(V42);
     Blynk.syncVirtual(V62);
     Blynk.syncVirtual(V61);
@@ -693,7 +699,7 @@ void takeSamples() {
     Blynk.syncVirtual(V79);
     Blynk.syncVirtual(V82);
 
-    float min_value = findLowestNonZero(v41_value, v42_value, v62_value);
+    float min_value = findLowestNonZero(neotemp, jojutemp, bridgetemp);
     if (min_value != 999) {
       for (int i = 0; i < (maxArray - 1); i++) {
         array3[i] = array3[i + 1];
@@ -871,72 +877,29 @@ void setup() {
   if (GPIO_reason < 0) {
     startWifi();
     takeSamples();
-    switch (page) {
-      case 0:
-      case 1:
-        doTempDisplay();
-        break;
-      case 2:
-        doMainDisplay();
-        break;
-      case 3:
-        doHumDisplay();
-        break;
-      case 4:
-        doBatDisplay();
-        break;
-    }
+    doMainDisplay();
   }
-  switch (GPIO_reason) {
-    case 1:
-      page = 1;
-      doTempDisplay();
-      break;
-    case 3:
-      page = 2;
-      doMainDisplay();
-      break;
-    case 2:
-      page = 3;
-      doMainDisplay();
-      break;
-    case 5:
-      page = 4;
-      doBatDisplay();
-      break;
-    case 0:
-      delay(50);
-      while (digitalRead(0)) {
+else{
+      while (digitalRead(0) && digitalRead(1) && digitalRead(2)) {
         delay(10);
-        if (millis() > 2000) {
+        if (millis() > 3000) {
           startWebserver();
           return;
         }
+        startWifi();
+        takeSamples();
+        doMainDisplay();
       }
-      wipeScreen();
-      startWifi();
-      takeSamples();
-      display.clearScreen();
-      switch (page) {
-        case 0:
-        case 1:
-          doTempDisplay();
-          break;
-        case 2:
-          doMainDisplay();
-          break;
-        case 3:
-          doHumDisplay();
-          break;
-        case 4:
-          doBatDisplay();
-          break;
-      }
+      gotosleep();
   }
 }
 
 void loop() {
   ArduinoOTA.handle();
-  if (digitalRead(0)) { gotosleep(); }
+  if (digitalRead(0)) { 
+    startWifi();
+    takeSamples();
+    doMainDisplay();
+    gotosleep(); }
   delay(250);
 }
