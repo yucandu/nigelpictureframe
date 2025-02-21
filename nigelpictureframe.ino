@@ -12,10 +12,12 @@
 #include <Fonts/FreeSansBold12pt7b.h>
 #include <Fonts/FreeSans9pt7b.h>
 #include <time.h>
-
-#include <ArduinoJson.h>
+#include <met_icons_black_50x50.h>
+#include <Arduino_JSON.h>
 #include <Wire.h>
 #include <ADS1115_WE.h>
+#include "WeatherAPIHandler.h"                 // Custom JSON document handler
+#include <ArduinoStreamParser.h>            // <==== THE JSON Streaming Parser - Arduino STREAM WRAPPER
 #define I2C_ADDRESS 0x48
 
 #include "driver/periph_ctrl.h"
@@ -164,19 +166,70 @@ float findLowestNonZero(float a, float b, float c) {
   return minimum;
 }
 
+void wrapWords(const char *s, int16_t MAXWIDTH, char ns[], int NS_LENGTH) {
+  // Make a working copy (since strtok modifies the string).
+  char buffer[256];
+  strncpy(buffer, s, sizeof(buffer) - 1);
+  buffer[sizeof(buffer) - 1] = '\0';
+  
+  // Clear output buffer.
+  ns[0] = '\0';
+
+  char line[256] = "";
+  bool firstWord = true;
+
+  char *token = strtok(buffer, " ");
+  while (token != NULL) {
+    char testLine[256];
+    if (firstWord) {
+      snprintf(testLine, sizeof(testLine), "%s", token);
+    } else {
+      snprintf(testLine, sizeof(testLine), "%s %s", line, token);
+    }
+
+    int16_t x1, y1;
+    uint16_t w, h;
+    // Use current cursor position as starting position
+    int16_t cx = display.getCursorX();
+    int16_t cy = display.getCursorY();
+    display.getTextBounds(testLine, cx, cy, &x1, &y1, &w, &h);
+
+    // If adding the word exceeds MAXWIDTH (and line is not empty), then wrap.
+    if (!firstWord && (w + x1 > MAXWIDTH)) {
+      // Append the current line and a newline character.
+      strncat(ns, line, NS_LENGTH - strlen(ns) - 1);
+      strncat(ns, "\n", NS_LENGTH - strlen(ns) - 1);
+      // Start new line with current token.
+      strcpy(line, token);
+    } else {
+      // Otherwise, append token (with a space if not the first word)
+      if (!firstWord) {
+        strcat(line, " ");
+      }
+      strcat(line, token);
+    }
+    firstWord = false;
+    token = strtok(NULL, " ");
+  }
+  // Append any remaining text.
+  if (strlen(line) > 0) {
+    strncat(ns, line, NS_LENGTH - strlen(ns) - 1);
+  }
+}
+
 void gotosleep() {
   //WiFi.disconnect();
   display.hibernate();
   //SPI.end();
  // Wire.end();
-//  pinMode(SS, INPUT);
-//  pinMode(6, INPUT);
+  //  pinMode(SS, INPUT);
+  //  pinMode(6, INPUT);
  // pinMode(4, INPUT);
  // pinMode(8, INPUT);
  // pinMode(9, INPUT);
   pinMode(0, INPUT);
   pinMode(1, INPUT);
-//  pinMode(2, INPUT);
+  //  pinMode(2, INPUT);
   pinMode(3, INPUT);
 
 
@@ -359,8 +412,269 @@ void setupChart() {
 double mapf(float x, float in_min, float in_max, float out_min, float out_max) {
   return (x - in_min) * (out_max - out_min) / (in_max - in_min) + out_min;
 }
+const char* weatherURL = "https://api.weatherapi.com/v1/forecast.json?key=xxxxxxxxx&q=xxxxxx%2CCA&days=3";
+const char* calendarURL = "https://script.googleusercontent.com/macros/echo?user_content_key=xxxxxxxxxx&lib=xxxxxxx";
 
-const char* calendarURL = "https://script.googleusercontent.com/macros/echo?user_content_key=xxxxxxxxx";
+String convertUTCtoEST(const char* utcTimeStr) {
+    struct tm timeinfo;
+    memset(&timeinfo, 0, sizeof(struct tm));
+
+    // Parse UTC time string (expected format: "2025-02-20T16:00:00.000Z")
+    int year, month, day, hour, min, sec;
+    sscanf(utcTimeStr, "%4d-%2d-%2dT%2d:%2d:%2d", &year, &month, &day, &hour, &min, &sec);
+    
+    // Populate timeinfo struct
+    timeinfo.tm_year = year - 1900;
+    timeinfo.tm_mon = month - 1;
+    timeinfo.tm_mday = day;
+    timeinfo.tm_hour = hour;
+    timeinfo.tm_min = min;
+    timeinfo.tm_sec = sec;
+
+    // Convert to time_t (epoch time)
+    time_t eventTime = mktime(&timeinfo);
+
+    // Adjust to local EST/EDT time
+    time_t localTime = eventTime + gmtOffset_sec + daylightOffset_sec;
+    localtime_r(&localTime, &timeinfo);
+
+    // Format time into 12-hour format with AM/PM
+    char buffer[16];
+    int hour12 = (timeinfo.tm_hour % 12 == 0) ? 12 : (timeinfo.tm_hour % 12);
+    const char* ampm = (timeinfo.tm_hour >= 12) ? "PM" : "AM";
+    snprintf(buffer, sizeof(buffer), "%d:%02d %s", hour12, timeinfo.tm_min, ampm);
+
+    return String(buffer);
+}
+
+// Automatically map weather condition text to an icon
+const uint8_t* getWeatherIcon(const String &condition) {
+  String cond = condition;
+  cond.toLowerCase();
+  
+  // Check for freezing conditions first.
+  if (cond.indexOf("freezing rain") >= 0 || cond.indexOf("ice pellets") >= 0) {
+    return met_bitmap_black_50x50_heavyrain; // fallback for freezing conditions
+  }
+  // Sunny / Clear conditions
+  else if (cond.indexOf("sunny") >= 0 || cond.indexOf("clear") >= 0) {
+    return met_bitmap_black_50x50_clearsky_day;
+  }
+  // Partly cloudy (or mostly sunny) conditions
+  else if (cond.indexOf("partly cloudy") >= 0 || cond.indexOf("mostly sunny") >= 0) {
+    return met_bitmap_black_50x50_partlycloudy_day;
+  }
+  // Cloudy conditions (including mostly cloudy)
+  else if (cond.indexOf("cloudy") >= 0 || cond.indexOf("mostly cloudy") >= 0) {
+    return met_bitmap_black_50x50_cloudy;
+  }
+  // Overcast: treat same as cloudy
+  else if (cond.indexOf("overcast") >= 0) {
+    return met_bitmap_black_50x50_cloudy;
+  }
+  // Rain-related conditions
+  else if (cond.indexOf("rainy") >= 0 || cond.indexOf("shower") >= 0 || cond.indexOf("drizzle") >= 0) {
+    if (cond.indexOf("thunderstorm") >= 0) {
+      return met_bitmap_black_50x50_rainshowersandthunder_day;
+    }
+    return met_bitmap_black_50x50_rainshowers_day;
+  }
+  // Thunderstorm without explicit rain keyword
+  else if (cond.indexOf("thunderstorm") >= 0) {
+    return met_bitmap_black_50x50_rainshowersandthunder_day;
+  }
+  // Snow conditions
+  else if (cond.indexOf("snow") >= 0) {
+    return met_bitmap_black_50x50_snowshowers_day;
+  }
+  // Sleet conditions
+  else if (cond.indexOf("sleet") >= 0) {
+    return met_bitmap_black_50x50_sleet;
+  }
+  // Hail conditions: use a heavy rain icon as fallback
+  else if (cond.indexOf("hail") >= 0) {
+    return met_bitmap_black_50x50_heavyrain;
+  }
+  // Fog, mist, blowing snow, dust, smoke, or haze
+  else if (cond.indexOf("fog") >= 0 || cond.indexOf("mist") >= 0 ||
+           cond.indexOf("blowing snow") >= 0 || cond.indexOf("dust") >= 0 ||
+           cond.indexOf("smoke") >= 0 || cond.indexOf("haze") >= 0) {
+    return met_bitmap_black_50x50_fog;
+  }
+  // Windy condition – fallback to a fair day icon
+  else if (cond.indexOf("windy") >= 0) {
+    return met_bitmap_black_50x50_fair_day;
+  }
+  // Default fallback icon
+  return met_bitmap_black_50x50_cloudy;
+}
+
+String httpGETRequest(const char* serverName) {
+  WiFiClientSecure  client;
+  client.setInsecure();
+  HTTPClient http;
+  http.begin(client, serverName);
+  http.useHTTP10(true);
+  
+  http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
+  int httpResponseCode = http.GET();
+  String payload = "{}";
+  if (httpResponseCode > 0) {
+    display.print("HTTP Response code: ");
+    display.println(httpResponseCode);
+    payload = http.getString();
+  } else {
+    display.print("Error code: ");
+    display.println(httpResponseCode);
+  }
+  http.end();
+  return payload;
+}
+
+
+void drawWeatherForecast() {
+  // Create a secure WiFi client.
+  std::unique_ptr<WiFiClientSecure> client(new WiFiClientSecure);
+  client->setInsecure();
+
+  // Instantiate the streaming JSON parser and our custom WeatherAPI handler.
+  ArudinoStreamParser parser;         // Declare the stream parser.
+  WeatherAPIHandler custom_handler;     // Our handler (which populates myForecasts).
+  parser.setHandler(&custom_handler);   // Link the parser to the handler.
+  HTTPClient http;
+  // Begin the HTTP request to WeatherAPI.
+  http.begin(*client, weatherURL);
+  int httpCode = http.GET();
+  if (httpCode > 0) {
+    if (httpCode == HTTP_CODE_OK) {
+      Serial.print("Got payload response of length: ");
+      Serial.println(http.getSize());
+      Serial.println("Parsing JSON...");
+      
+      // Stream the HTTP response directly into the parser.
+      http.writeToStream(&parser);
+    }
+    else {
+      Serial.printf("Unexpected HTTP code: %d\n", httpCode);
+      http.end();
+      return;
+    }
+  }
+  else {
+    Serial.printf("HTTP GET failed, error: %s\n", http.errorToString(httpCode).c_str());
+    http.end();
+    return;
+  }
+  http.end();
+
+  // Now that our handler has populated myForecasts with forecast day data,
+  // we can render the forecast on the display.
+  int cellWidth = 300 / 3;  // Assuming a display width of 300 pixels and three columns.
+  int yOffset = 25;         // Y offset where the forecast area begins.
+  
+  int i = 0;
+  // Iterate through the forecast list (assumed to be in reverse order, if needed you can reverse the list).
+  for (auto &day : myForecasts) {
+    if (i >= 3) break;  // Only display the first three forecast entries.
+
+    // Determine the title for the cell.
+    String title;
+    if (i == 0)
+      title = "Today";
+    else if (i == 1)
+      title = "Tomorrow";
+    else
+      title = String(day.date);  // 'day.date' is a C-string (e.g., "2025-02-20").
+
+    // Retrieve temperature values and the condition summary.
+    float maxTemp = day.maxtemp_c;
+    float minTemp = day.mintemp_c;
+    String conditionText = String(day.summary);
+    const uint8_t* icon = getWeatherIcon(conditionText);  // Assumes getWeatherIcon() returns a pointer to a bitmap.
+    int xOffset = i * cellWidth;
+    
+    // Draw the title centered in the cell.
+    display.setFont(&FreeSansBold12pt7b);
+    int16_t dX, dY;
+    uint16_t textW, textH;
+    display.getTextBounds(title.c_str(), 0, 0, &dX, &dY, &textW, &textH);
+    int titleX = xOffset + (cellWidth - textW) / 2;
+    int titleY = yOffset + textH;
+    display.setCursor(titleX, titleY);
+    display.print(title);
+    
+    // Draw the weather icon (assumed to be 50x50) centered in the cell.
+    int iconX = xOffset + (cellWidth - 50) / 2;
+    int iconY = titleY + 5;
+    display.drawBitmap(iconX, iconY, icon, 50, 50, BLACK);
+    
+    // Draw max/min temperature below the icon, formatted as "Max°/Min°".
+    String tempStr = String((int)maxTemp) + "°/" + String((int)minTemp) + "°";
+    display.getTextBounds(tempStr.c_str(), 0, 0, &dX, &dY, &textW, &textH);
+    int tempX = xOffset + (cellWidth - textW) / 2;
+    int tempY = iconY + 50 + textH + 5;
+    display.setCursor(tempX, tempY);
+    display.print(tempStr);
+    
+    i++;
+  }
+}
+
+
+void drawTopSensorRow() {
+  // Outer edges are covered by 3px, so start at (3,3)
+  int startX = 3;
+  int startY = 3;
+  display.setFont(&FreeSans9pt7b);
+  
+  // We'll assume the top row is drawn on a single line (e.g. baseline at y = startY + text height)
+  int16_t dummyX, dummyY;
+  uint16_t textW, textH;
+  
+  // --- Temperature ---
+  String tempStr = String(t, 1);  // e.g. "23.5"
+  display.getTextBounds(tempStr.c_str(), startX, startY, &dummyX, &dummyY, &textW, &textH);
+  int yPos = startY + textH;  // Use text height as baseline
+  display.setCursor(startX, yPos);
+  display.print(tempStr);
+  
+  // Draw degree symbol using drawCircle (shift 4px right, 3px up relative to the end of the temp text)
+  int degX = startX + textW + 4;
+  int degY = yPos - (textH / 2) - 3;
+  display.drawCircle(degX, degY, 2, BLACK);
+  
+  // Print "C" after the degree symbol
+  display.setCursor(degX + 6, yPos);
+  display.print("C");
+  
+  // --- Humidity ---
+  String humStr = String(h, 1) + "%";
+  // Center the humidity value in the middle of the display (width = 300)
+  display.getTextBounds(humStr.c_str(), 0, yPos, &dummyX, &dummyY, &textW, &textH);
+  int humX = (300 - textW) / 2;
+  display.setCursor(humX, yPos);
+  display.print(humStr);
+  
+  // --- Current Time ---
+  // Get the current local time (which has been set up via initTime)
+  struct tm timeinfo;
+  if (getLocalTime(&timeinfo)) {
+    char timeBuffer[10];
+    int hour12 = (timeinfo.tm_hour % 12 == 0) ? 12 : (timeinfo.tm_hour % 12);
+    const char* ampm = (timeinfo.tm_hour >= 12) ? "PM" : "AM";
+    snprintf(timeBuffer, sizeof(timeBuffer), "%d:%02d %s", hour12, timeinfo.tm_min, ampm);
+    String timeStr = timeBuffer;
+    
+    display.getTextBounds(timeStr.c_str(), 0, yPos, &dummyX, &dummyY, &textW, &textH);
+    int timeX = 300 - textW - 3;  // Align at far right, leaving 3px from the edge
+    display.setCursor(timeX, yPos);
+    display.print(timeStr);
+  }
+  
+  // Optionally draw a horizontal black line below the sensor row:
+  display.drawLine(3, yPos + 3, 300 - 3, yPos + 3, BLACK);
+}
+
 
 void drawSensorCell(int xStart, int xEnd, int y, const char* title, float value, bool drawDegree, const char* unit, bool roundValue = false) {
   display.setFont(&FreeSans9pt7b);
@@ -395,11 +709,11 @@ void drawSensorCell(int xStart, int xEnd, int y, const char* title, float value,
   display.setCursor(xValue, y);
   display.print(numStr);
   
-if (drawDegree) {
-    int degX = xValue + numW + 6; // Moved 4 pixels right (was +2)
-    int degY = y - numH / 2 - 3;  // Moved 3 pixels up
-    display.drawCircle(degX, degY, 2, BLACK);
-}
+  if (drawDegree) {
+      int degX = xValue + numW + 6; // Moved 4 pixels right (was +2)
+      int degY = y - numH / 2 - 3;  // Moved 3 pixels up
+      display.drawCircle(degX, degY, 2, BLACK);
+  }
   
   display.setCursor(xValue + numW + degreeWidth, y);
   display.print(unitStr);
@@ -426,80 +740,94 @@ void drawSensorData() {
 
 // Draw calendar events with black bullet points
 void fetchAndDisplayEvents() {
-  HTTPClient http;
-  http.begin(calendarURL);
-  http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
-  int httpCode = http.GET();
-  
-  if (httpCode == HTTP_CODE_OK) {
-    String payload = http.getString();
-    DynamicJsonDocument doc(2048);
-    DeserializationError error = deserializeJson(doc, payload);
-    if (error) {
-      Serial.println("JSON parse error");
-      return;
-    }
-    
-    JsonArray events = doc.as<JsonArray>();
-    String lastDate = "";
-    int printedEvents = 0;
-    int y = 220;
+  //display.println(ESP.getFreeHeap());
+  String payload = httpGETRequest(calendarURL);
+  Serial.print("Calendar payload size: ");
+  Serial.println(payload.length());
+  Serial.println("Calendar payload start (first 200 chars):");
+  Serial.println(payload.substring(0, 200));
 
-    for (JsonObject event : events) {
-      if (printedEvents >= 3) break;
+  JSONVar events = JSON.parse(payload);
+  if (JSON.typeof(events) == "undefined") {
+    display.println("Calendar JSON parse failed");
+    return;
+  }
 
-      const char* title = event["title"];
-      const char* startTime = event["startTime"];
-      
-      int year, month, day, hour, minute;
-      if (sscanf(startTime, "%4d-%2d-%2dT%2d:%2d", &year, &month, &day, &hour, &minute) == 5) {
-        struct tm t;
-        t.tm_year = year - 1900;
-        t.tm_mon = month - 1;
-        t.tm_mday = day;
-        t.tm_hour = hour;
-        t.tm_min = minute;
-        t.tm_sec = 0;
-        t.tm_isdst = -1;
-        mktime(&t);
-        
-        char dateBuffer[40];
-        strftime(dateBuffer, sizeof(dateBuffer), "%A, %B %d", &t);
-        String fullDateStr = dateBuffer;
-        
-        if (lastDate != fullDateStr) {
-          lastDate = fullDateStr;
-          display.setFont(&FreeSansBold12pt7b);
-          display.setCursor(10, y);
-          display.print(fullDateStr);
-          y += 20;
-        }
-        
-        char timeBuffer[10];
-        strftime(timeBuffer, sizeof(timeBuffer), "%I:%M %p", &t);
-        String timeStr = timeBuffer;
-        if (timeStr.charAt(0) == '0') {
-          timeStr = timeStr.substring(1);
-        }
-        
-        int bulletX = 10;
-        int bulletY = y - 5;
-        display.fillCircle(bulletX, bulletY, 2, BLACK);
-        
-        display.setFont(&FreeSans9pt7b);
-        display.setCursor(bulletX + 8, y);
-        display.print(timeStr);
-        display.print(" - ");
-        display.print(title);
-        
-        
-        y += 25;
-        printedEvents++;
+  String lastDate = "";
+  int printedEvents = 0;
+  int y = 220;  // Starting y-coordinate for calendar events
+  int eventCount = events.length(); // Get the number of events
+
+  for (int i = 0; i < eventCount && printedEvents < 3; i++) {
+    JSONVar event = events[i];
+    String title = String((const char*)event["title"]);
+    String startTime = String((const char*)event["startTime"]);
+
+    int year, month, day, hour, minute;
+    if (sscanf(startTime.c_str(), "%4d-%2d-%2dT%2d:%2d", &year, &month, &day, &hour, &minute) == 5) {
+      struct tm t;
+      t.tm_year = year - 1900;
+      t.tm_mon = month - 1;
+      t.tm_mday = day;
+      t.tm_hour = hour;
+      t.tm_min = minute;
+      t.tm_sec = 0;
+      t.tm_isdst = -1;
+      mktime(&t);
+
+      // Format date header: "DayOfWeek, MonthName Day"
+      char dateBuffer[40];
+      strftime(dateBuffer, sizeof(dateBuffer), "%A, %B %d", &t);
+      String fullDateStr = dateBuffer;
+
+      // Print new date header if different from previous event
+      if (lastDate != fullDateStr) {
+        lastDate = fullDateStr;
+        display.setFont(&FreeSansBold12pt7b);
+        display.setCursor(10, y);
+        display.println(fullDateStr);
+        y += 20;  // Adjust spacing after date header
       }
+
+      // Format time in 12-hour AM/PM (remove any leading zero)
+      char timeBuffer[10];
+      strftime(timeBuffer, sizeof(timeBuffer), "%I:%M %p", &t);
+      String timeStr = timeBuffer;
+      if (timeStr.charAt(0) == '0') {
+        timeStr = timeStr.substring(1);
+      }
+
+      // Build the full event text as "time - title"
+      String eventText = timeStr + " - " + title;
+
+      // Use wrapWords() to insert newlines so words aren't split
+      const int maxWidth = 300 - (10);
+      char wrappedText[512];
+      display.setCursor(10 + 8, y);
+      wrapWords(eventText.c_str(), maxWidth, wrappedText, sizeof(wrappedText));
+      display.setFont(&FreeSans9pt7b);
+
+      // Instead of printing wrappedText as one string, split it into lines and print each line with println.
+      char *line = strtok(wrappedText, "\n");
+      while (line != NULL) {
+        // Draw bullet only on the first line.
+        if (line == wrappedText) {
+          int bulletX = 10;
+          int bulletY = y - 5;  // Adjust bullet position
+          display.fillCircle(bulletX, bulletY, 2, BLACK);
+        }
+        display.setCursor(10 + 8, y);
+        display.println(line);
+        y += 10;  // Advance for each line (adjust as needed)
+        line = strtok(NULL, "\n");
+      }
+      printedEvents++;
+    } else {
+      display.println("Failed to parse startTime");
     }
   }
-  http.end();
 }
+
 
 void doTempDisplay() {
   // Recalculate min and max values from array1
@@ -594,7 +922,10 @@ void doMainDisplay() {
   display.fillRect(DISP_WIDTH - 38 - 2 - xOffset, DISP_HEIGHT - 10 - 2 - yOffset, barx, 10, GxEPD_BLACK);
   display.drawLine(DISP_WIDTH - 2 - xOffset, DISP_HEIGHT - 10 - 2 + 1 - yOffset, DISP_WIDTH - 2 - xOffset, DISP_HEIGHT - 2 - 2 - yOffset, GxEPD_BLACK);
   display.drawLine(DISP_WIDTH - 1 - xOffset, DISP_HEIGHT - 10 - 2 + 1 - yOffset, DISP_WIDTH - 1 - xOffset, DISP_HEIGHT - 2 - 2 - yOffset, GxEPD_BLACK);
-  drawSensorData();
+  drawTopSensorRow();
+  
+  // Draw weather forecast in the middle area (approximately y=21 to y=200)
+  drawWeatherForecast();
   fetchAndDisplayEvents();
   display.display(true);
   gotosleep();
@@ -859,7 +1190,7 @@ void setup() {
   display.setFont();
   pinMode(0, INPUT);
   pinMode(1, INPUT);
-  pinMode(2, INPUT);
+  pinMode(3, INPUT);
 
 
   delay(10);
@@ -880,16 +1211,17 @@ void setup() {
     doMainDisplay();
   }
 else{
-      while (digitalRead(0) && digitalRead(1) && digitalRead(2)) {
+      delay(50);
+      while (digitalRead(0) && digitalRead(1) && digitalRead(3)) {
         delay(10);
         if (millis() > 3000) {
           startWebserver();
           return;
         }
-        startWifi();
-        takeSamples();
-        doMainDisplay();
       }
+      startWifi();
+      takeSamples();
+      doMainDisplay();
       gotosleep();
   }
 }
