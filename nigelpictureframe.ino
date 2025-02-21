@@ -25,11 +25,11 @@ int GPIO_reason;
 #include "esp_sleep.h"
 
 // Include fonts and define them
-#include <Fonts/Roboto_Condensed_12.h>
-#include <Fonts/Open_Sans_Condensed_Bold_48.h>
+//#include <Fonts/Roboto_Condensed_12.h>
+//#include <Fonts/Open_Sans_Condensed_Bold_48.h>
 
-#define FONT1
-#define FONT2 &Open_Sans_Condensed_Bold_48
+#define FONT1 &FreeSans9pt7b
+#define FONT2 &FreeSansBold12pt7b
 #define WHITE GxEPD_WHITE
 #define BLACK GxEPD_BLACK
 
@@ -412,8 +412,8 @@ void setupChart() {
 double mapf(float x, float in_min, float in_max, float out_min, float out_max) {
   return (x - in_min) * (out_max - out_min) / (in_max - in_min) + out_min;
 }
-const char* weatherURL = "https://api.weatherapi.com/v1/forecast.json?key=xxxxxxxxx&q=xxxxxx%2CCA&days=3";
-const char* calendarURL = "https://script.googleusercontent.com/macros/echo?user_content_key=xxxxxxxxxx&lib=xxxxxxx";
+const char* weatherURL = "https://api.weatherapi.com/v1/forecast.json?key=xxxxx&q=xxxxxxxx%2CCA&days=3";
+const char* calendarURL = "https://script.googleusercontent.com/macros/echo?user_content_key=xxxxx&lib=xxxx";
 
 String convertUTCtoEST(const char* utcTimeStr) {
     struct tm timeinfo;
@@ -451,63 +451,72 @@ String convertUTCtoEST(const char* utcTimeStr) {
 const uint8_t* getWeatherIcon(const String &condition) {
   String cond = condition;
   cond.toLowerCase();
-  
+  display.setFont(&FreeSans9pt7b);
+  //display.print("Cond: ");
+  //display.println(cond);
+
   // Check for freezing conditions first.
   if (cond.indexOf("freezing rain") >= 0 || cond.indexOf("ice pellets") >= 0) {
-    return met_bitmap_black_50x50_heavyrain; // fallback for freezing conditions
+    return met_bitmap_black_50x50_heavyrain;
+  }
+  // Prioritize any condition that mentions "snow"
+  if (cond.indexOf("snow") >= 0) {
+    // If it also has "shower", use the snow showers icon.
+    if (cond.indexOf("shower") >= 0) {
+      return met_bitmap_black_50x50_snowshowers_day;
+    }
+    // Otherwise, use the default snow icon.
+    return met_bitmap_black_50x50_snow;
   }
   // Sunny / Clear conditions
-  else if (cond.indexOf("sunny") >= 0 || cond.indexOf("clear") >= 0) {
+  if (cond.indexOf("sunny") >= 0 || cond.indexOf("clear") >= 0) {
     return met_bitmap_black_50x50_clearsky_day;
   }
   // Partly cloudy (or mostly sunny) conditions
-  else if (cond.indexOf("partly cloudy") >= 0 || cond.indexOf("mostly sunny") >= 0) {
+  if (cond.indexOf("partly cloudy") >= 0 || cond.indexOf("mostly sunny") >= 0) {
     return met_bitmap_black_50x50_partlycloudy_day;
   }
   // Cloudy conditions (including mostly cloudy)
-  else if (cond.indexOf("cloudy") >= 0 || cond.indexOf("mostly cloudy") >= 0) {
+  if (cond.indexOf("cloudy") >= 0 || cond.indexOf("mostly cloudy") >= 0) {
     return met_bitmap_black_50x50_cloudy;
   }
   // Overcast: treat same as cloudy
-  else if (cond.indexOf("overcast") >= 0) {
+  if (cond.indexOf("overcast") >= 0) {
     return met_bitmap_black_50x50_cloudy;
   }
   // Rain-related conditions
-  else if (cond.indexOf("rainy") >= 0 || cond.indexOf("shower") >= 0 || cond.indexOf("drizzle") >= 0) {
+  if (cond.indexOf("rain") >= 0 || cond.indexOf("shower") >= 0 || cond.indexOf("drizzle") >= 0) {
     if (cond.indexOf("thunderstorm") >= 0) {
       return met_bitmap_black_50x50_rainshowersandthunder_day;
     }
     return met_bitmap_black_50x50_rainshowers_day;
   }
   // Thunderstorm without explicit rain keyword
-  else if (cond.indexOf("thunderstorm") >= 0) {
+  if (cond.indexOf("thunderstorm") >= 0) {
     return met_bitmap_black_50x50_rainshowersandthunder_day;
   }
-  // Snow conditions
-  else if (cond.indexOf("snow") >= 0) {
-    return met_bitmap_black_50x50_snowshowers_day;
-  }
   // Sleet conditions
-  else if (cond.indexOf("sleet") >= 0) {
+  if (cond.indexOf("sleet") >= 0) {
     return met_bitmap_black_50x50_sleet;
   }
-  // Hail conditions: use a heavy rain icon as fallback
-  else if (cond.indexOf("hail") >= 0) {
+  // Hail conditions
+  if (cond.indexOf("hail") >= 0) {
     return met_bitmap_black_50x50_heavyrain;
   }
   // Fog, mist, blowing snow, dust, smoke, or haze
-  else if (cond.indexOf("fog") >= 0 || cond.indexOf("mist") >= 0 ||
-           cond.indexOf("blowing snow") >= 0 || cond.indexOf("dust") >= 0 ||
-           cond.indexOf("smoke") >= 0 || cond.indexOf("haze") >= 0) {
+  if (cond.indexOf("fog") >= 0 || cond.indexOf("mist") >= 0 ||
+      cond.indexOf("blowing snow") >= 0 || cond.indexOf("dust") >= 0 ||
+      cond.indexOf("smoke") >= 0 || cond.indexOf("haze") >= 0) {
     return met_bitmap_black_50x50_fog;
   }
   // Windy condition – fallback to a fair day icon
-  else if (cond.indexOf("windy") >= 0) {
+  if (cond.indexOf("wind") >= 0) {
     return met_bitmap_black_50x50_fair_day;
   }
   // Default fallback icon
-  return met_bitmap_black_50x50_cloudy;
+  return met_bitmap_black_50x50_heavysnowshowersandthunder_polartwilight;
 }
+
 
 String httpGETRequest(const char* serverName) {
   WiFiClientSecure  client;
@@ -520,8 +529,8 @@ String httpGETRequest(const char* serverName) {
   int httpResponseCode = http.GET();
   String payload = "{}";
   if (httpResponseCode > 0) {
-    display.print("HTTP Response code: ");
-    display.println(httpResponseCode);
+    //display.print("HTTP Response code: ");
+    //display.println(httpResponseCode);
     payload = http.getString();
   } else {
     display.print("Error code: ");
@@ -570,21 +579,28 @@ void drawWeatherForecast() {
   // Now that our handler has populated myForecasts with forecast day data,
   // we can render the forecast on the display.
   int cellWidth = 300 / 3;  // Assuming a display width of 300 pixels and three columns.
-  int yOffset = 25;         // Y offset where the forecast area begins.
+  int yOffset = 36;         // Y offset where the forecast area begins.
   
   int i = 0;
   // Iterate through the forecast list (assumed to be in reverse order, if needed you can reverse the list).
   for (auto &day : myForecasts) {
     if (i >= 3) break;  // Only display the first three forecast entries.
 
-    // Determine the title for the cell.
-    String title;
-    if (i == 0)
-      title = "Today";
-    else if (i == 1)
-      title = "Tomorrow";
-    else
-      title = String(day.date);  // 'day.date' is a C-string (e.g., "2025-02-20").
+  String title;
+  if (i == 0)
+    title = "Today";
+  else if (i == 1)
+    title = "Tomorrow";
+  else {
+    // Convert the epoch time to a tm struct.
+    struct tm *timeinfo = gmtime(&day.date_epoch);
+
+    // Array mapping tm_wday values (0 = Sunday, 6 = Saturday) to day names.
+    const char* weekdayNames[] = { "Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday" };
+
+    // Set the title to the day name.
+    title = weekdayNames[timeinfo->tm_wday];
+  }
 
     // Retrieve temperature values and the condition summary.
     float maxTemp = day.maxtemp_c;
@@ -594,12 +610,12 @@ void drawWeatherForecast() {
     int xOffset = i * cellWidth;
     
     // Draw the title centered in the cell.
-    display.setFont(&FreeSansBold12pt7b);
+    display.setFont(&FreeSans9pt7b);
     int16_t dX, dY;
     uint16_t textW, textH;
     display.getTextBounds(title.c_str(), 0, 0, &dX, &dY, &textW, &textH);
     int titleX = xOffset + (cellWidth - textW) / 2;
-    int titleY = yOffset + textH;
+    int titleY = yOffset ;//+ textH;
     display.setCursor(titleX, titleY);
     display.print(title);
     
@@ -607,7 +623,7 @@ void drawWeatherForecast() {
     int iconX = xOffset + (cellWidth - 50) / 2;
     int iconY = titleY + 5;
     display.drawBitmap(iconX, iconY, icon, 50, 50, BLACK);
-    
+    display.setFont(FONT2);
     // Draw max/min temperature below the icon, formatted as "Max°/Min°".
     String tempStr = String((int)maxTemp) + "°/" + String((int)minTemp) + "°";
     display.getTextBounds(tempStr.c_str(), 0, 0, &dX, &dY, &textW, &textH);
@@ -615,7 +631,23 @@ void drawWeatherForecast() {
     int tempY = iconY + 50 + textH + 5;
     display.setCursor(tempX, tempY);
     display.print(tempStr);
-    
+    display.setFont(FONT1);
+        // Check for totalsnow_cm and totalprecip_mm.
+        if (day.totalsnow_cm > 0.5) {
+            String extra = String(day.totalsnow_cm, 1) + " cm";
+            display.getTextBounds(extra.c_str(), 0, 0, &dX, &dY, &textW, &textH);
+            int extraX = xOffset + (cellWidth - textW) / 2;
+            int extraY = tempY + textH + 5;
+            display.setCursor(extraX, extraY);
+            display.print(extra);
+        } else if (day.totalprecip_mm > 0.5) {
+            String extra = String(day.totalprecip_mm, 1) + " mm";
+            display.getTextBounds(extra.c_str(), 0, 0, &dX, &dY, &textW, &textH);
+            int extraX = xOffset + (cellWidth - textW) / 2;
+            int extraY = tempY + textH + 5;
+            display.setCursor(extraX, extraY);
+            display.print(extra);
+        }
     i++;
   }
 }
@@ -648,7 +680,7 @@ void drawTopSensorRow() {
   display.print("C");
   
   // --- Humidity ---
-  String humStr = String(h, 1) + "%";
+  String humStr = String(h, 1) + "% RH";
   // Center the humidity value in the middle of the display (width = 300)
   display.getTextBounds(humStr.c_str(), 0, yPos, &dummyX, &dummyY, &textW, &textH);
   int humX = (300 - textW) / 2;
@@ -666,7 +698,7 @@ void drawTopSensorRow() {
     String timeStr = timeBuffer;
     
     display.getTextBounds(timeStr.c_str(), 0, yPos, &dummyX, &dummyY, &textW, &textH);
-    int timeX = 300 - textW - 3;  // Align at far right, leaving 3px from the edge
+    int timeX = 300 - textW - 12;  // Align at far right, leaving 3px from the edge
     display.setCursor(timeX, yPos);
     display.print(timeStr);
   }
@@ -801,7 +833,7 @@ void fetchAndDisplayEvents() {
       String eventText = timeStr + " - " + title;
 
       // Use wrapWords() to insert newlines so words aren't split
-      const int maxWidth = 300 - (10);
+      const int maxWidth = 290;
       char wrappedText[512];
       display.setCursor(10 + 8, y);
       wrapWords(eventText.c_str(), maxWidth, wrappedText, sizeof(wrappedText));
@@ -818,7 +850,7 @@ void fetchAndDisplayEvents() {
         }
         display.setCursor(10 + 8, y);
         display.println(line);
-        y += 10;  // Advance for each line (adjust as needed)
+        y += 21;  // Advance for each line (adjust as needed)
         line = strtok(NULL, "\n");
       }
       printedEvents++;
@@ -1212,17 +1244,19 @@ void setup() {
   }
 else{
       delay(50);
-      while (digitalRead(0) && digitalRead(1) && digitalRead(3)) {
-        delay(10);
-        if (millis() > 3000) {
-          startWebserver();
-          return;
+      if (digitalRead(0) && digitalRead(1) && digitalRead(3)) {
+        while (digitalRead(0) && digitalRead(1) && digitalRead(3)) {
+          delay(10);
+          if (millis() > 3000) {
+            startWebserver();
+            return;
+          }
         }
+        startWifi();
+        takeSamples();
+        doMainDisplay();
+        gotosleep();
       }
-      startWifi();
-      takeSamples();
-      doMainDisplay();
-      gotosleep();
   }
 }
 
