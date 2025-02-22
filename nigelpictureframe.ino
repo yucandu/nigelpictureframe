@@ -10,12 +10,14 @@
 #include <WiFiClientSecure.h>
 #include <BlynkSimpleEsp32.h>
 #include <Fonts/FreeSansBold12pt7b.h>
+#include <Fonts/FreeSans12pt7b.h>
 #include <Fonts/FreeSans9pt7b.h>
 #include <time.h>
 #include <met_icons_black_50x50.h>
 #include <Arduino_JSON.h>
 #include <Wire.h>
 #include <ADS1115_WE.h>
+WidgetTerminal terminal(V10);
 #include "WeatherAPIHandler.h"                 // Custom JSON document handler
 #include <ArduinoStreamParser.h>            // <==== THE JSON Streaming Parser - Arduino STREAM WRAPPER
 #define I2C_ADDRESS 0x48
@@ -30,6 +32,7 @@ int GPIO_reason;
 
 #define FONT1 &FreeSans9pt7b
 #define FONT2 &FreeSansBold12pt7b
+#define FONT3 &FreeSans12pt7b
 #define WHITE GxEPD_WHITE
 #define BLACK GxEPD_BLACK
 
@@ -53,27 +56,36 @@ const char* password = "springchicken";
 
 #define ENABLE_GxEPD2_GFX 1
 #define TIME_TIMEOUT 20000
-#define sleeptimeSecs 3600
-#define maxArray 501
+#define sleeptimeSecs 60
+#define maxArray 24
 
-RTC_DATA_ATTR float array1[maxArray];
-RTC_DATA_ATTR float array2[maxArray];
-RTC_DATA_ATTR float array3[maxArray];
-RTC_DATA_ATTR float array4[maxArray];
+#define every(interval) \
+    static uint32_t __every__##interval = millis(); \
+    if (millis() - __every__##interval >= interval && (__every__##interval = millis()))
+
+typedef struct {
+    float min_value;
+    int hour;
+} sensorReadings;
+
+// Add RTC_DATA_ATTR to preserve across deep sleep
+RTC_DATA_ATTR sensorReadings Readings[maxArray];
+RTC_DATA_ATTR int numReadings = 0;
+
 RTC_DATA_ATTR float fridgetemp, outtemp;
 const char* ntpServer = "pool.ntp.org";
 const long gmtOffset_sec = -18000;  //Replace with your GMT offset (secs)
 const int daylightOffset_sec = 0;   //Replace with your daylight offset (secs)
 float t, h, pres, barx;
 float v41_value, v42_value, v62_value;
-
-RTC_DATA_ATTR int firstrun = 100;
+RTC_DATA_ATTR bool firstrun = true;
+RTC_DATA_ATTR int runcount = 50;
+RTC_DATA_ATTR int minutecount = 0;
 RTC_DATA_ATTR int page = 2;
 float abshum;
 float minVal = 3.9;
 float maxVal = 4.2;
-RTC_DATA_ATTR int readingCount = 0;  // Counter for the number of readings
-int readingTime;
+
 
 #define BUTTON_PIN_BITMASK(GPIO) (1ULL << GPIO)
 
@@ -82,10 +94,12 @@ char auth[] = "qS5PQ8pvrbYzXdiA4I6uLEWYfeQrOcM4"; //indiana auth
 
 const char* v41_pin = "V41";
 const char* v62_pin = "V62";
-
+bool precip = false;
 float vBat;
 
 float temppool, pm25in, pm25out, bridgetemp, bridgehum, windspeed, winddir, windchill, windgust, humidex, bridgeco2, bridgeIrms, watts, kw, tempSHT, humSHT, co2SCD, presBME, neotemp, jojutemp, temptodraw;
+
+
 
 BLYNK_WRITE(V41) {
   neotemp = param.asFloat();
@@ -154,6 +168,11 @@ BLYNK_WRITE(V93) {
 
 BLYNK_WRITE(V94) {
   presBME = param.asFloat();
+}
+
+void clearReadings() {
+    memset(Readings, 0, sizeof(Readings));
+    numReadings = 0;
 }
 
 
@@ -374,46 +393,13 @@ void wipeScreen() {
 //--------------------------------------------------
 // Setup chart decorations (scaled for 400x300)
 //--------------------------------------------------
-void setupChart() {
-  display.setTextSize(1);
-  display.setFont();
-  display.setCursor(0, 0);
-  display.print("<");
-  display.print(maxVal, 3);
 
-  // Bottom text (y coordinate scaled from 193 to near DISP_HEIGHT-7)
-  display.setCursor(0, DISP_HEIGHT - 7);
-  display.print("<");
-  display.print(minVal, 3);
-
-  // Additional info (originally at 100,193; now scaled)
-  display.setCursor(200, DISP_HEIGHT - 7);
-  display.print("<#");
-  display.print(readingCount - 1, 0);
-  display.print("*");
-  display.print(sleeptimeSecs, 0);
-  display.print("s>");
-
-  // Battery progress bar: originally mapped to 19 px, now doubled to 38
-  int barx = mapf(vBat, 3.3, 4.15, 0, 38);
-  if (barx > 38) { barx = 38; }
-  if (barx < 0) { barx = 0; }
-  // Draw battery rectangle at bottom right with a small margin
-  display.drawRect(DISP_WIDTH - 38 - 2, DISP_HEIGHT - 10 - 2, 38, 10, GxEPD_BLACK);
-  display.fillRect(DISP_WIDTH - 38 - 2, DISP_HEIGHT - 10 - 2, barx, 10, GxEPD_BLACK);
-  // Draw tick marks on battery (at the right edge)
-  display.drawLine(DISP_WIDTH - 2, DISP_HEIGHT - 10 - 2 + 1, DISP_WIDTH - 2, DISP_HEIGHT - 2 - 2, GxEPD_BLACK);
-  display.drawLine(DISP_WIDTH - 1, DISP_HEIGHT - 10 - 2 + 1, DISP_WIDTH - 1, DISP_HEIGHT - 2 - 2, GxEPD_BLACK);
-
-  // Set cursor for additional chart decorations (scaled; original was at 80,0)
-  display.setCursor(160, 0);
-}
 
 double mapf(float x, float in_min, float in_max, float out_min, float out_max) {
   return (x - in_min) * (out_max - out_min) / (in_max - in_min) + out_min;
 }
-const char* weatherURL = "https://api.weatherapi.com/v1/forecast.json?key=xxxxx&q=xxxxxxxx%2CCA&days=3";
-const char* calendarURL = "https://script.googleusercontent.com/macros/echo?user_content_key=xxxxx&lib=xxxx";
+const char* weatherURL = "https://api.weatherapi.com/v1/forecast.json?key=xxxxxxxxxxxxxxxx&q=xxxxxxxxxxxx%2CCA&days=3";
+const char* calendarURL = "https://script.googleusercontent.com/macros/echo?user_content_key=x-xxxxxxxxx&lib=xxxxxxx";
 
 String convertUTCtoEST(const char* utcTimeStr) {
     struct tm timeinfo;
@@ -523,7 +509,7 @@ String httpGETRequest(const char* serverName) {
   client.setInsecure();
   HTTPClient http;
   http.begin(client, serverName);
-  http.useHTTP10(true);
+  //http.useHTTP10(true);
   
   http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
   int httpResponseCode = http.GET();
@@ -542,6 +528,7 @@ String httpGETRequest(const char* serverName) {
 
 
 void drawWeatherForecast() {
+  display.setPartialWindow(0, 0, display.width(), display.height());
   // Create a secure WiFi client.
   std::unique_ptr<WiFiClientSecure> client(new WiFiClientSecure);
   client->setInsecure();
@@ -579,7 +566,7 @@ void drawWeatherForecast() {
   // Now that our handler has populated myForecasts with forecast day data,
   // we can render the forecast on the display.
   int cellWidth = 300 / 3;  // Assuming a display width of 300 pixels and three columns.
-  int yOffset = 36;         // Y offset where the forecast area begins.
+  int yOffset = 39;         // Y offset where the forecast area begins.
   
   int i = 0;
   // Iterate through the forecast list (assumed to be in reverse order, if needed you can reverse the list).
@@ -623,9 +610,9 @@ void drawWeatherForecast() {
     int iconX = xOffset + (cellWidth - 50) / 2;
     int iconY = titleY + 5;
     display.drawBitmap(iconX, iconY, icon, 50, 50, BLACK);
-    display.setFont(FONT2);
-    // Draw max/min temperature below the icon, formatted as "Max°/Min°".
-    String tempStr = String((int)maxTemp) + "°/" + String((int)minTemp) + "°";
+    display.setFont(FONT3);
+    // Draw max/min temperature below the icon, formatted as "Max~/Min~".
+    String tempStr = String((int)maxTemp) + "~/" + String((int)minTemp) + "~";
     display.getTextBounds(tempStr.c_str(), 0, 0, &dX, &dY, &textW, &textH);
     int tempX = xOffset + (cellWidth - textW) / 2;
     int tempY = iconY + 50 + textH + 5;
@@ -640,6 +627,7 @@ void drawWeatherForecast() {
             int extraY = tempY + textH + 5;
             display.setCursor(extraX, extraY);
             display.print(extra);
+            precip = true;
         } else if (day.totalprecip_mm > 0.5) {
             String extra = String(day.totalprecip_mm, 1) + " mm";
             display.getTextBounds(extra.c_str(), 0, 0, &dX, &dY, &textW, &textH);
@@ -647,6 +635,7 @@ void drawWeatherForecast() {
             int extraY = tempY + textH + 5;
             display.setCursor(extraX, extraY);
             display.print(extra);
+            precip = true;
         }
     i++;
   }
@@ -654,6 +643,9 @@ void drawWeatherForecast() {
 
 
 void drawTopSensorRow() {
+  int lineheight = 24;
+  display.fillRect(0, 0, display.width(), lineheight, WHITE);
+  display.displayWindow(0, 0, display.width(), lineheight);
   // Outer edges are covered by 3px, so start at (3,3)
   int startX = 3;
   int startY = 3;
@@ -673,11 +665,11 @@ void drawTopSensorRow() {
   // Draw degree symbol using drawCircle (shift 4px right, 3px up relative to the end of the temp text)
   int degX = startX + textW + 4;
   int degY = yPos - (textH / 2) - 3;
-  display.drawCircle(degX, degY, 2, BLACK);
+  //display.drawCircle(degX, degY, 2, BLACK);
   
   // Print "C" after the degree symbol
-  display.setCursor(degX + 6, yPos);
-  display.print("C");
+  //display.setCursor(degX + 6, yPos);
+  display.print("~C");
   
   // --- Humidity ---
   String humStr = String(h, 1) + "% RH";
@@ -690,6 +682,8 @@ void drawTopSensorRow() {
   // --- Current Time ---
   // Get the current local time (which has been set up via initTime)
   struct tm timeinfo;
+  setenv("TZ","EST5EDT,M3.2.0,M11.1.0",1);  //  Now adjust the TZ.  Clock settings are adjusted to show the new local time
+  tzset();
   if (getLocalTime(&timeinfo)) {
     char timeBuffer[10];
     int hour12 = (timeinfo.tm_hour % 12 == 0) ? 12 : (timeinfo.tm_hour % 12);
@@ -705,69 +699,105 @@ void drawTopSensorRow() {
   
   // Optionally draw a horizontal black line below the sensor row:
   display.drawLine(3, yPos + 3, 300 - 3, yPos + 3, BLACK);
+  display.displayWindow(0, 0, display.width(), lineheight);
 }
 
 
-void drawSensorCell(int xStart, int xEnd, int y, const char* title, float value, bool drawDegree, const char* unit, bool roundValue = false) {
-  display.setFont(&FreeSans9pt7b);
-  
-  display.setCursor(xStart, y);
-  display.print(title);
-  
-  String numStr;
-  if (roundValue) {
-    numStr = String((int)value);  // Convert to integer for CO2 ppm
-  } else {
-    numStr = String(value, 1);  // Keep one decimal place for other values
-  }
-  
-  String unitStr = String(" ") + unit;
-  
-  int16_t dummyX, dummyY;
-  uint16_t numW, numH;
-  display.getTextBounds(numStr.c_str(), 0, y, &dummyX, &dummyY, &numW, &numH);
-  
-  int degreeWidth = 0;
-  if (drawDegree) {
-    degreeWidth = 6; // Space for the degree symbol
-  }
-  
-  uint16_t unitW, unitH;
-  display.getTextBounds(unitStr.c_str(), 0, y, &dummyX, &dummyY, &unitW, &unitH);
-  
-  int totalWidth = numW + degreeWidth + unitW;
-  int xValue = xEnd - totalWidth;
-  
-  display.setCursor(xValue, y);
-  display.print(numStr);
-  
-  if (drawDegree) {
-      int degX = xValue + numW + 6; // Moved 4 pixels right (was +2)
-      int degY = y - numH / 2 - 3;  // Moved 3 pixels up
-      display.drawCircle(degX, degY, 2, BLACK);
-  }
-  
-  display.setCursor(xValue + numW + degreeWidth, y);
-  display.print(unitStr);
-}
 
 
-void drawSensorData() {
-  // Define cell boundaries:
-  // Left column: x from 10 to 150; Right column: x from 160 to 290.
-  int leftXStart = 10, leftXEnd = 150;
-  int rightXStart = 160, rightXEnd = 290;
-  
-  // Define y positions for two rows; adjust these as needed.
-  int row1Y = 40;   // First row (e.g., "Temp" and "Out")
-  int row2Y = 100;  // Second row (e.g., "Hum" and "CO2")
-  
-  // Draw sensor cells:
-  drawSensorCell(leftXStart, leftXEnd, row1Y, "Temp", t, true, "C");
-  drawSensorCell(rightXStart, rightXEnd, row1Y, "Out", findLowestNonZero(neotemp, jojutemp, bridgetemp), true, "C");
-  drawSensorCell(leftXStart, leftXEnd, row2Y, "Hum", h, false, "%");
-  drawSensorCell(rightXStart, rightXEnd, row2Y, "CO2", co2SCD, false, "ppm", true);
+void drawHourlyChart() {
+    int chartYTop = 150;
+    int chartYBottom = 190;
+    if (!precip) {chartYTop = 125;}
+    int chartHeight = chartYBottom - chartYTop;
+    int cellWidth = 300 / 3;
+
+    // Compute global min/max including recorded temperatures
+    float globalMin = 1e6;
+    float globalMax = -1e6;
+    ForecastDay forecastArray[3];
+    int idx = 0;
+    for (auto it = myForecasts.begin(); it != myForecasts.end() && idx < 3; ++it, ++idx) {
+         forecastArray[idx] = *it;
+    }
+    for (int d = 0; d < 3; d++) {
+         for (int h = 0; h < 24; h++) {
+             float tempcheck = forecastArray[d].hourly[h];
+             if (tempcheck < globalMin) globalMin = tempcheck;
+             if (tempcheck > globalMax) globalMax = tempcheck;
+         }
+    }
+    
+    // Check recorded temperatures
+    if (numReadings > 0) {
+        for (int i = 0; i < numReadings; i++) {
+            float tempcheck = Readings[i].min_value;
+            if (tempcheck < globalMin) globalMin = tempcheck;
+            if (tempcheck > globalMax) globalMax = tempcheck;
+        }
+    }
+    
+    if (globalMax - globalMin < 1) {
+         globalMax = globalMin + 1;
+    }
+
+    // Draw y-axis labels
+    display.setFont();
+    char label[10];
+    snprintf(label, sizeof(label), "%.0f", globalMax);
+    display.setCursor(0, chartYTop - 9);
+    display.print(label);
+    //display.print(char(247));
+    snprintf(label, sizeof(label), "%.0f", globalMin);
+    display.setCursor(0, chartYBottom + 2);
+    display.print(label);
+    //display.print(char(247));
+    // Draw forecast days
+    for (int d = 0; d < 3; d++) {
+         int xOffset = d * cellWidth;
+         // Draw tick marks
+         for (int h = 0; h <= 24; h += 2) {
+             int x = xOffset + (int)((float)h / 23.0 * (cellWidth - 1));
+             display.drawLine(x, chartYBottom, x, chartYBottom - 3, BLACK);
+         }
+         
+         // Draw forecast line
+         int prevX = 0, prevY = 0;
+         bool firstPoint = true;
+         for (int h = 0; h < 24; h++) {
+             float temp = forecastArray[d].hourly[h];
+             int y = chartYBottom - (int)(((temp - globalMin) / (globalMax - globalMin)) * chartHeight);
+             int x = xOffset + (int)((float)h / 23.0 * (cellWidth - 1));
+             if (!firstPoint) {
+                 display.drawLine(prevX, prevY, x, y, BLACK);
+             }
+             prevX = x;
+             prevY = y;
+             firstPoint = false;
+         }
+         
+         // Draw recorded temperature circles for day 0
+         if (d == 0 && numReadings > 0) {
+             for (int i = 0; i < numReadings; i++) {
+                 int h = Readings[i].hour;
+                 float temp = Readings[i].min_value;
+                 int y = chartYBottom - (int)(((temp - globalMin) / (globalMax - globalMin)) * chartHeight);
+                 int x = xOffset + (int)((float)h / 23.0 * (cellWidth - 1));
+                 
+                 // Draw two concentric circles
+                 //display.drawCircle(x, y, 3, BLACK);
+                 display.drawCircle(x, y, 1, BLACK);
+             }
+         }
+         
+         // Draw cell border
+         display.drawRect(xOffset, chartYTop, cellWidth, chartHeight, BLACK);
+    }
+    
+    // Draw bottom axis
+    display.drawLine(0, chartYBottom, 300, chartYBottom, BLACK);
 }
+
 
 
 // Draw calendar events with black bullet points
@@ -787,7 +817,7 @@ void fetchAndDisplayEvents() {
 
   String lastDate = "";
   int printedEvents = 0;
-  int y = 220;  // Starting y-coordinate for calendar events
+  int y = 212;  // Starting y-coordinate for calendar events
   int eventCount = events.length(); // Get the number of events
 
   for (int i = 0; i < eventCount && printedEvents < 3; i++) {
@@ -814,9 +844,10 @@ void fetchAndDisplayEvents() {
 
       // Print new date header if different from previous event
       if (lastDate != fullDateStr) {
+        y+=8;
         lastDate = fullDateStr;
-        display.setFont(&FreeSansBold12pt7b);
-        display.setCursor(10, y);
+        display.setFont(FONT2);
+        display.setCursor(5, y);
         display.println(fullDateStr);
         y += 20;  // Adjust spacing after date header
       }
@@ -850,7 +881,7 @@ void fetchAndDisplayEvents() {
         }
         display.setCursor(10 + 8, y);
         display.println(line);
-        y += 21;  // Advance for each line (adjust as needed)
+        y += 19;  // Advance for each line (adjust as needed)
         line = strtok(NULL, "\n");
       }
       printedEvents++;
@@ -861,81 +892,7 @@ void fetchAndDisplayEvents() {
 }
 
 
-void doTempDisplay() {
-  // Recalculate min and max values from array1
-  minVal = array1[maxArray - readingCount];
-  maxVal = array1[maxArray - readingCount];
 
-  for (int i = maxArray - readingCount + 1; i < maxArray; i++) {
-    if (array1[i] != 0) {  // Only consider non-zero values
-      if (array1[i] < minVal) { minVal = array1[i]; }
-      if (array1[i] > maxVal) { maxVal = array1[i]; }
-    }
-  }
-
-  // Scale factors: full width is DISP_WIDTH and full height is DISP_HEIGHT
-  float yScale = (DISP_HEIGHT - 1) / (maxVal - minVal);
-  float xStep = (float)DISP_WIDTH / (readingCount - 1);
-
-  wipeScreen();
-
-  do {
-    display.fillRect(0, 0, display.width(), display.height(), GxEPD_WHITE);
-    for (int i = maxArray - readingCount; i < (maxArray - 1); i++) {
-      int x0 = (i - (maxArray - readingCount)) * xStep;
-      int y0 = (DISP_HEIGHT - 1) - ((array1[i] - minVal) * yScale);
-      int x1 = (i + 1 - (maxArray - readingCount)) * xStep;
-      int y1 = (DISP_HEIGHT - 1) - ((array1[i + 1] - minVal) * yScale);
-      if (array1[i] != 0) {
-        display.drawLine(x0, y0, x1, y1, GxEPD_BLACK);
-      }
-    }
-    setupChart();
-    display.setCursor(20, DISP_HEIGHT - 7);
-    display.print("[Temp: ");
-    display.print(array1[maxArray - 1], 3);
-    display.print("c]");
-  } while (display.nextPage());
-
-  display.setFullWindow();
-  gotosleep();
-}
-
-void doHumDisplay() {
-  // Recalculate min and max values from array2
-  minVal = array2[maxArray - readingCount];
-  maxVal = array2[maxArray - readingCount];
-
-  for (int i = maxArray - readingCount + 1; i < maxArray; i++) {
-    if ((array2[i] < minVal) && (array2[i] > 0)) { minVal = array2[i]; }
-    if (array2[i] > maxVal) { maxVal = array2[i]; }
-  }
-
-  float yScale = (DISP_HEIGHT - 1) / (maxVal - minVal);
-  float xStep = (float)DISP_WIDTH / (readingCount - 1);
-
-  wipeScreen();
-
-  do {
-    display.fillRect(0, 0, display.width(), display.height(), GxEPD_WHITE);
-    for (int i = maxArray - readingCount; i < (maxArray - 1); i++) {
-      int x0 = (i - (maxArray - readingCount)) * xStep;
-      int y0 = (DISP_HEIGHT - 1) - ((array2[i] - minVal) * yScale);
-      int x1 = (i + 1 - (maxArray - readingCount)) * xStep;
-      int y1 = (DISP_HEIGHT - 1) - ((array2[i + 1] - minVal) * yScale);
-      if (array2[i] > 0) {
-        display.drawLine(x0, y0, x1, y1, GxEPD_BLACK);
-      }
-    }
-    setupChart();
-    display.print("[Hum: ");
-    display.print(array2[maxArray - 1], 2);
-    display.print("g]");
-  } while (display.nextPage());
-
-  display.setFullWindow();
-  gotosleep();
-}
 
 void doMainDisplay() {
     Blynk.syncVirtual(V41);
@@ -958,100 +915,16 @@ void doMainDisplay() {
   
   // Draw weather forecast in the middle area (approximately y=21 to y=200)
   drawWeatherForecast();
+  drawHourlyChart();
   fetchAndDisplayEvents();
-  display.display(true);
+  display.displayWindow(0, 0,  display.width(),  display.height());
+  terminal.flush();
+  Blynk.run();
+  delay(50);
   gotosleep();
 }
 
-void doPresDisplay() {
-  // Recalculate min and max values from array3
-  minVal = array3[maxArray - readingCount];
-  maxVal = array3[maxArray - readingCount];
 
-  for (int i = maxArray - readingCount + 1; i < maxArray; i++) {
-    if ((array3[i] < minVal) && (array3[i] > 0)) { minVal = array3[i]; }
-    if (array3[i] > maxVal) { maxVal = array3[i]; }
-  }
-
-  float yScale = (DISP_HEIGHT - 1) / (maxVal - minVal);
-  float xStep = (float)DISP_WIDTH / (readingCount - 1);
-
-  wipeScreen();
-
-  do {
-    display.fillRect(0, 0, display.width(), display.height(), GxEPD_WHITE);
-    for (int i = maxArray - readingCount; i < (maxArray - 1); i++) {
-      int x0 = (i - (maxArray - readingCount)) * xStep;
-      int y0 = (DISP_HEIGHT - 1) - ((array3[i] - minVal) * yScale);
-      int x1 = (i + 1 - (maxArray - readingCount)) * xStep;
-      int y1 = (DISP_HEIGHT - 1) - ((array3[i + 1] - minVal) * yScale);
-      if (array3[i] > 0) {
-        display.drawLine(x0, y0, x1, y1, GxEPD_BLACK);
-      }
-    }
-    setupChart();
-    display.print("[Pres: ");
-    display.print(array3[maxArray - 1], 2);
-    display.print("mb]");
-  } while (display.nextPage());
-
-  display.setFullWindow();
-  gotosleep();
-}
-
-void doBatDisplay() {
-  display.setFont();
-  display.setTextSize(1);
-  // Recalculate min and max values from array4
-  minVal = array4[maxArray - readingCount];
-  maxVal = array4[maxArray - readingCount];
-
-  for (int i = maxArray - readingCount + 1; i < maxArray; i++) {
-    if ((array4[i] < minVal) && (array4[i] > 0)) { minVal = array4[i]; }
-    if (array4[i] > maxVal) { maxVal = array4[i]; }
-  }
-
-  float yScale = (DISP_HEIGHT - 1) / (maxVal - minVal);
-  float xStep = (float)DISP_WIDTH / (readingCount - 1);
-
-  wipeScreen();
-
-  do {
-    display.fillRect(0, 0, display.width(), display.height(), GxEPD_WHITE);
-    for (int i = maxArray - readingCount; i < (maxArray - 1); i++) {
-      int x0 = (i - (maxArray - readingCount)) * xStep;
-      int y0 = (DISP_HEIGHT - 1) - ((array4[i] - minVal) * yScale);
-      int x1 = (i + 1 - (maxArray - readingCount)) * xStep;
-      int y1 = (DISP_HEIGHT - 1) - ((array4[i + 1] - minVal) * yScale);
-      if (array4[i] > 0) {
-        display.drawLine(x0, y0, x1, y1, GxEPD_BLACK);
-      }
-    }
-    // Chart decoration text (scaled positions)
-    display.setCursor(0, 0);
-    display.print("<");
-    display.print(maxVal, 3);
-    display.setCursor(0, DISP_HEIGHT - 7);
-    display.print("<");
-    display.print(minVal, 3);
-    display.setCursor(240, DISP_HEIGHT - 7);  // scaled from original 120
-    display.print("<#");
-    display.print(readingCount - 1, 0);
-    display.print("*");
-    display.print(sleeptimeSecs, 0);
-    display.print("s>");
-    int batPct = mapf(vBat, 3.3, 4.15, 0, 100);
-    display.setCursor(160, 0);  // scaled from original 80,0
-    display.print("[vBat: ");
-    display.print(vBat, 3);
-    display.print("v/");
-    display.print(batPct, 1);
-    display.print("%]");
-  } while (display.nextPage());
-
-  display.setFullWindow();
-  gotosleep();
-}
 
 
 void takeSamples() {
@@ -1064,127 +937,26 @@ void takeSamples() {
 
     float min_value = findLowestNonZero(neotemp, jojutemp, bridgetemp);
     if (min_value != 999) {
-      for (int i = 0; i < (maxArray - 1); i++) {
-        array3[i] = array3[i + 1];
+      time_t now = time(nullptr);
+      struct tm timeinfo;
+      localtime_r(&now, &timeinfo);
+      
+      // Clear readings at start of new day
+      if (timeinfo.tm_hour == 0) {
+          clearReadings();
       }
-      array3[maxArray - 1] = min_value;
+      
+      // Record new reading
+      Readings[numReadings].min_value = min_value;
+      Readings[numReadings].hour = timeinfo.tm_hour;
+      if (numReadings < maxArray - 1) {
+          numReadings++;
+      }
     }
   }
-
-  if (readingCount < maxArray) {
-    readingCount++;
-  }
-
-  for (int i = 0; i < (maxArray - 1); i++) {
-    array1[i] = array1[i + 1];
-  }
-  array1[maxArray - 1] = t;
-
-  for (int i = 0; i < (maxArray - 1); i++) {
-    array2[i] = array2[i + 1];
-  }
-  array2[maxArray - 1] = abshum;
-
-  for (int i = 0; i < (maxArray - 1); i++) {
-    array4[i] = array4[i + 1];
-  }
-  array4[maxArray - 1] = vBat;
 }
 
-void updateMain() {
-  time_t now = time(NULL);
-  struct tm timeinfo;
-  localtime_r(&now, &timeinfo);
 
-  char timeString[10];
-  if (timeinfo.tm_min < 10) {
-    snprintf(timeString, sizeof(timeString), "%d:0%d %s",
-             timeinfo.tm_hour % 12 == 0 ? 12 : timeinfo.tm_hour % 12,
-             timeinfo.tm_min, timeinfo.tm_hour < 12 ? "AM" : "PM");
-  } else {
-    snprintf(timeString, sizeof(timeString), "%d:%d %s",
-             timeinfo.tm_hour % 12 == 0 ? 12 : timeinfo.tm_hour % 12,
-             timeinfo.tm_min, timeinfo.tm_hour < 12 ? "AM" : "PM");
-  }
-
-  display.setFullWindow();
-  display.fillScreen(GxEPD_WHITE);
-
-  // Draw vertical center lines and horizontal center lines
-  display.drawLine(200 - 1, 0, 200 - 1, DISP_HEIGHT, GxEPD_BLACK);
-  display.drawLine(200, 0, 200, DISP_HEIGHT, GxEPD_BLACK);
-  display.drawLine(0, 150 - 1, DISP_WIDTH, 150 - 1, GxEPD_BLACK);
-  display.drawLine(0, 150, DISP_WIDTH, 150, GxEPD_BLACK);
-
-  // Scale quadrant coordinates (original values scaled by 2 for x and 1.5 for y)
-  int height1 = 60 * 3 / 2;   // 60 becomes 90
-  int width2 = 118 * 2;       // 118 becomes 236
-  int height2 = 160 * 3 / 2;  // 160 becomes 240
-
-  // Quadrant 1: Top-left (Temperature)
-  display.setFont(FONT1);
-  display.setCursor(24 * 2, (int)(2 * 1.5));  // (48,3)
-  display.print("Temp");
-  float temptodraw = array3[maxArray - 1];
-  if (temptodraw > -10) {
-    display.setCursor(8 * 2, height1);  // (16,90)
-  } else {
-    display.setCursor(2 * 2, height1);  // (4,90)
-  }
-  display.setFont(FONT2);
-  if ((temptodraw > 0) && (temptodraw < 10)) { display.print(" "); }
-  display.print(temptodraw, 1);
-  if (temptodraw > -10) {
-    display.setFont();
-    display.print(char(247));
-    display.print("c");
-  }
-
-  // Quadrant 2: Top-right (Wind speed)
-  display.setFont(FONT1);
-  display.setCursor(124 * 2, (int)(2 * 1.5));  // (248,3)
-  display.print("Wind");
-  display.setCursor(width2, height1);  // (236,90)
-  display.setFont(FONT2);
-  display.print(windspeed, 0);
-  display.setFont();
-  display.print("kph");
-
-  // Quadrant 3: Bottom-left (Fridge temperature)
-  display.setFont(FONT1);
-  display.setCursor(24 * 2, (int)(104 * 1.5));  // (48,156)
-  display.print("Fridge");
-  display.setCursor(15 * 2, height2);  // (30,240)
-  display.setFont(FONT2);
-  display.print(fridgetemp, 1);
-  display.setFont();
-  display.print(char(247));
-  display.print("c");
-
-  // Quadrant 4: Bottom-right (Wind gust)
-  display.setFont(FONT1);
-  display.setCursor(124 * 2, (int)(104 * 1.5));  // (248,156)
-  display.print("Gust");
-  display.setCursor(width2, height2);  // (236,240)
-  display.setFont(FONT2);
-  display.print(windgust, 0);
-  display.setFont();
-  display.print("kph");
-
-  // Display time string near the bottom-left (scaled from y=192 to y ~288)
-  display.setFont();
-  display.setCursor(0, (int)(192 * 1.5));  // ~288
-  display.print(timeString);
-
-  // Battery status (scaled)
-  int barx = mapf(vBat, 3.3, 4.15, 0, 38);
-  if (barx > 38) { barx = 38; }
-  display.drawRect(DISP_WIDTH - 38 - 2, DISP_HEIGHT - 10 - 2, 38, 10, GxEPD_BLACK);
-  display.fillRect(DISP_WIDTH - 38 - 2, DISP_HEIGHT - 10 - 2, barx, 10, GxEPD_BLACK);
-  display.drawLine(DISP_WIDTH - 2, DISP_HEIGHT - 10 - 2 + 1, DISP_WIDTH - 2, DISP_HEIGHT - 2 - 2, GxEPD_BLACK);
-  display.drawLine(DISP_WIDTH - 1, DISP_HEIGHT - 10 - 2 + 1, DISP_WIDTH - 1, DISP_HEIGHT - 2 - 2, GxEPD_BLACK);
-  display.display(true);
-}
 
 float readChannel(ADS1115_MUX channel) {
   float voltage = 0.0;
@@ -1220,6 +992,7 @@ void setup() {
   display.init(115200, false, 10, false);
   display.setRotation(1);
   display.setFont();
+  
   pinMode(0, INPUT);
   pinMode(1, INPUT);
   pinMode(3, INPUT);
@@ -1227,22 +1000,17 @@ void setup() {
 
   delay(10);
 
-  if (firstrun >= 100) {
+  if (runcount >= 1000) {
     display.clearScreen();
     if (page == 2) {
       wipeScreen();
     }
-    firstrun = 0;
+    runcount = 0;
   }
-  firstrun++;
+  runcount++;
   display.setTextColor(GxEPD_BLACK, GxEPD_WHITE);
 
-  if (GPIO_reason < 0) {
-    startWifi();
-    takeSamples();
-    doMainDisplay();
-  }
-else{
+  if (GPIO_reason >= 0) {
       delay(50);
       if (digitalRead(0) && digitalRead(1) && digitalRead(3)) {
         while (digitalRead(0) && digitalRead(1) && digitalRead(3)) {
@@ -1255,9 +1023,31 @@ else{
         startWifi();
         takeSamples();
         doMainDisplay();
-        gotosleep();
       }
+      gotosleep();
   }
+else{
+        if (firstrun) {
+          firstrun = false;
+        startWifi();
+        takeSamples();
+        doMainDisplay();
+        }
+        else if (minutecount > 59) {
+          minutecount = 0;
+          startWifi();
+          takeSamples();
+          doMainDisplay();
+        }
+        else {
+          minutecount++;
+          drawTopSensorRow();
+          gotosleep();
+        }
+
+
+  }
+//gotosleep();
 }
 
 void loop() {
