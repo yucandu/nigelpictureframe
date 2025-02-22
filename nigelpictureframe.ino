@@ -288,13 +288,13 @@ void initTime(String timezone) {
 }
 
 void startWifi() {
-  display.setTextSize(2);
-  display.setPartialWindow(0, 0, display.width(), display.height());
-  display.setCursor(0, 0);
-  display.firstPage();
-  do {
-    display.print("Connecting...");
-  } while (display.nextPage());
+  //display.setTextSize(2);
+  //display.setPartialWindow(0, 0, display.width(), display.height());
+  //display.setCursor(0, 0);
+  //display.firstPage();
+  //do {
+  //  display.print("Connecting...");
+  //} while (display.nextPage());
   WiFi.mode(WIFI_STA);
   WiFi.begin(ssid, password);
   WiFi.setTxPower(WIFI_POWER_8_5dBm);
@@ -302,18 +302,18 @@ void startWifi() {
   while (WiFi.status() != WL_CONNECTED) {
     if (millis() > 10000) { display.print("!"); }
     if (millis() > 20000) { break; }
-    display.print(".");
-    display.display(true);
+    //display.print(".");
+    //display.display(true);
     delay(1000);
   }
 
-  if (WiFi.status() == WL_CONNECTED) {
+  /*if (WiFi.status() == WL_CONNECTED) {
     display.println("");
     display.print("Connected. Getting time...");
   } else {
     display.print("Connection timed out. :(");
   }
-  display.display(true);
+  display.display(true);*/
   display.setTextSize(1);
   initTime("EST5EDT,M3.2.0,M11.1.0");
   Blynk.config(auth, IPAddress(192, 168, 50, 197), 8080);
@@ -398,8 +398,8 @@ void wipeScreen() {
 double mapf(float x, float in_min, float in_max, float out_min, float out_max) {
   return (x - in_min) * (out_max - out_min) / (in_max - in_min) + out_min;
 }
-const char* weatherURL = "https://api.weatherapi.com/v1/forecast.json?key=xxxxxxxxxxxxxxxx&q=xxxxxxxxxxxx%2CCA&days=3";
-const char* calendarURL = "https://script.googleusercontent.com/macros/echo?user_content_key=x-xxxxxxxxx&lib=xxxxxxx";
+const char* weatherURL = "https://api.weatherapi.com/v1/forecast.json?key=xxxxxxxxxx&q=xxxxxxxxxxxxx%2CCA&days=3";
+const char* calendarURL = "https://script.googleusercontent.com/macros/echo?user_content_key=5RJgG2h-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx&lib=xxxxxxxxxxxx";
 
 String convertUTCtoEST(const char* utcTimeStr) {
     struct tm timeinfo;
@@ -912,7 +912,8 @@ void doMainDisplay() {
   display.drawLine(DISP_WIDTH - 2 - xOffset, DISP_HEIGHT - 10 - 2 + 1 - yOffset, DISP_WIDTH - 2 - xOffset, DISP_HEIGHT - 2 - 2 - yOffset, GxEPD_BLACK);
   display.drawLine(DISP_WIDTH - 1 - xOffset, DISP_HEIGHT - 10 - 2 + 1 - yOffset, DISP_WIDTH - 1 - xOffset, DISP_HEIGHT - 2 - 2 - yOffset, GxEPD_BLACK);
   drawTopSensorRow();
-  
+  display.fillRect(0, 0, display.width(), display.height(), WHITE);
+  display.displayWindow(0, 0, display.width(), display.height());
   // Draw weather forecast in the middle area (approximately y=21 to y=200)
   drawWeatherForecast();
   drawHourlyChart();
