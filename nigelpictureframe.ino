@@ -53,7 +53,7 @@ ADS1115_WE adc = ADS1115_WE(I2C_ADDRESS);
 const char* ssid = "mikesnet";
 bool isSetNtp = false;
 const char* password = "springchicken";
-
+JSONVar events;
 #define ENABLE_GxEPD2_GFX 1
 #define TIME_TIMEOUT 20000
 #define sleeptimeSecs 60
@@ -85,7 +85,7 @@ RTC_DATA_ATTR int page = 2;
 float abshum;
 float minVal = 3.9;
 float maxVal = 4.2;
-
+int lineheight = 24;
 
 #define BUTTON_PIN_BITMASK(GPIO) (1ULL << GPIO)
 
@@ -276,15 +276,25 @@ void gotosleep() {
 BLYNK_CONNECTED() {
   Blynk.syncVirtual(V41);
   Blynk.syncVirtual(V42);
+  //Blynk.syncVirtual(V61);
   Blynk.syncVirtual(V62);
-  Blynk.syncVirtual(V78);
-  Blynk.syncVirtual(V93);
-  Blynk.syncVirtual(V82);
+  //Blynk.syncVirtual(V93);
+  //Blynk.syncVirtual(V82);
+}
+
+#include "esp_sntp.h"
+void cbSyncTime(struct timeval *tv) { // callback function to show when NTP was synchronized
+  Serial.println("NTP time synched");
+  isSetNtp = true;
 }
 
 
 void initTime(String timezone) {
   configTzTime(timezone.c_str(), "time.cloudflare.com", "pool.ntp.org", "time.nist.gov");
+
+  while ((!isSetNtp) && (millis() < TIME_TIMEOUT)) {
+        delay(250);
+        }
 }
 
 void startWifi() {
@@ -344,9 +354,10 @@ void startWifi() {
 }
 
 void startWebserver() {
+  display.setTextSize(2);
   display.setFont();
   display.setPartialWindow(0, 0, display.width(), display.height());
-  display.setCursor(0, 0);
+  display.setCursor(0, 10);
   display.firstPage();
   do {
     display.print("Connecting...");
@@ -362,10 +373,10 @@ void startWebserver() {
     delay(1000);
   }
   wipeScreen();
-  display.setCursor(0, 0);
+  display.setCursor(0, 10);
   display.firstPage();
   do {
-    display.print("Connected! to: ");
+    display.println("Connected! to: ");
     display.println(WiFi.localIP());
   } while (display.nextPage());
   ArduinoOTA.setHostname("Nigel");
@@ -378,10 +389,10 @@ void startWebserver() {
 
 void wipeScreen() {
   display.setPartialWindow(0, 0, display.width(), display.height());
-  display.firstPage();
+  /*display.firstPage();
   do {
     display.fillRect(0, 0, display.width(), display.height(), GxEPD_BLACK);
-  } while (display.nextPage());
+  } while (display.nextPage());*/
   delay(10);
   display.firstPage();
   do {
@@ -398,8 +409,8 @@ void wipeScreen() {
 double mapf(float x, float in_min, float in_max, float out_min, float out_max) {
   return (x - in_min) * (out_max - out_min) / (in_max - in_min) + out_min;
 }
-const char* weatherURL = "https://api.weatherapi.com/v1/forecast.json?key=xxxxxxxxxx&q=xxxxxxxxxxxxx%2CCA&days=3";
-const char* calendarURL = "https://script.googleusercontent.com/macros/echo?user_content_key=5RJgG2h-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx&lib=xxxxxxxxxxxx";
+const char* weatherURL = "https://api.weatherapi.com/v1/forecast.json?key=xxxxxxxx&q=xxxxxxxx%2CCA&days=3";
+const char* calendarURL = "https://script.googleusercontent.com/macros/echo?user_content_key=xxxxxxxxxxxx&lib=xxxxxxxxxxxxxxxxx";
 
 String convertUTCtoEST(const char* utcTimeStr) {
     struct tm timeinfo;
@@ -526,10 +537,7 @@ String httpGETRequest(const char* serverName) {
   return payload;
 }
 
-
-void drawWeatherForecast() {
-  display.setPartialWindow(0, 0, display.width(), display.height());
-  // Create a secure WiFi client.
+void getWeatherForecast() {
   std::unique_ptr<WiFiClientSecure> client(new WiFiClientSecure);
   client->setInsecure();
 
@@ -562,6 +570,12 @@ void drawWeatherForecast() {
     return;
   }
   http.end();
+}
+
+void drawWeatherForecast() {
+  
+  // Create a secure WiFi client.
+
 
   // Now that our handler has populated myForecasts with forecast day data,
   // we can render the forecast on the display.
@@ -643,7 +657,7 @@ void drawWeatherForecast() {
 
 
 void drawTopSensorRow() {
-  int lineheight = 24;
+  
   display.fillRect(0, 0, display.width(), lineheight, WHITE);
   display.displayWindow(0, 0, display.width(), lineheight);
   // Outer edges are covered by 3px, so start at (3,3)
@@ -801,7 +815,7 @@ void drawHourlyChart() {
 
 
 // Draw calendar events with black bullet points
-void fetchAndDisplayEvents() {
+void fetchEvents() {
   //display.println(ESP.getFreeHeap());
   String payload = httpGETRequest(calendarURL);
   Serial.print("Calendar payload size: ");
@@ -809,12 +823,14 @@ void fetchAndDisplayEvents() {
   Serial.println("Calendar payload start (first 200 chars):");
   Serial.println(payload.substring(0, 200));
 
-  JSONVar events = JSON.parse(payload);
+  events = JSON.parse(payload);
   if (JSON.typeof(events) == "undefined") {
     display.println("Calendar JSON parse failed");
     return;
   }
+}
 
+void displayEvents() {
   String lastDate = "";
   int printedEvents = 0;
   int y = 212;  // Starting y-coordinate for calendar events
@@ -895,31 +911,30 @@ void fetchAndDisplayEvents() {
 
 
 void doMainDisplay() {
-    Blynk.syncVirtual(V41);
-    Blynk.syncVirtual(V42);
-    Blynk.syncVirtual(V62);
-    Blynk.syncVirtual(V61);
-    Blynk.syncVirtual(V93);
+  getWeatherForecast();
+  fetchEvents();
 
-  wipeScreen();
+
+  //wipeScreen();
   int barx = mapf(vBat, 3.3, 4.15, 0, 38);
   if (barx > 38) { barx = 38; }
   int xOffset = 5; // Move left
   int yOffset = 3; // Move up
 
+
+  drawTopSensorRow();
+  display.fillRect(0, lineheight, display.width(), display.height() - lineheight, WHITE);
+  display.displayWindow(0, lineheight, display.width(), display.height() - lineheight);
+  // Draw weather forecast in the middle area (approximately y=21 to y=200)
+  drawWeatherForecast();
+  drawHourlyChart();
+  displayEvents();
   display.drawRect(DISP_WIDTH - 38 - 2 - xOffset, DISP_HEIGHT - 10 - 2 - yOffset, 38, 10, GxEPD_BLACK);
   display.fillRect(DISP_WIDTH - 38 - 2 - xOffset, DISP_HEIGHT - 10 - 2 - yOffset, barx, 10, GxEPD_BLACK);
   display.drawLine(DISP_WIDTH - 2 - xOffset, DISP_HEIGHT - 10 - 2 + 1 - yOffset, DISP_WIDTH - 2 - xOffset, DISP_HEIGHT - 2 - 2 - yOffset, GxEPD_BLACK);
   display.drawLine(DISP_WIDTH - 1 - xOffset, DISP_HEIGHT - 10 - 2 + 1 - yOffset, DISP_WIDTH - 1 - xOffset, DISP_HEIGHT - 2 - 2 - yOffset, GxEPD_BLACK);
-  drawTopSensorRow();
-  display.fillRect(0, 0, display.width(), display.height(), WHITE);
-  display.displayWindow(0, 0, display.width(), display.height());
-  // Draw weather forecast in the middle area (approximately y=21 to y=200)
-  drawWeatherForecast();
-  drawHourlyChart();
-  fetchAndDisplayEvents();
-  display.displayWindow(0, 0,  display.width(),  display.height());
-  terminal.flush();
+  display.displayWindow(0, lineheight,  display.width(),  display.height() - lineheight);
+  //terminal.flush();
   Blynk.run();
   delay(50);
   gotosleep();
@@ -930,11 +945,6 @@ void doMainDisplay() {
 
 void takeSamples() {
   if (WiFi.status() == WL_CONNECTED) {
-    Blynk.syncVirtual(V41);
-    Blynk.syncVirtual(V62);
-    Blynk.syncVirtual(V78);
-    Blynk.syncVirtual(V79);
-    Blynk.syncVirtual(V82);
 
     float min_value = findLowestNonZero(neotemp, jojutemp, bridgetemp);
     if (min_value != 999) {
