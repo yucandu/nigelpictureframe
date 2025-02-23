@@ -409,8 +409,8 @@ void wipeScreen() {
 double mapf(float x, float in_min, float in_max, float out_min, float out_max) {
   return (x - in_min) * (out_max - out_min) / (in_max - in_min) + out_min;
 }
-const char* weatherURL = "https://api.weatherapi.com/v1/forecast.json?key=xxxxxxxx&q=xxxxxxxx%2CCA&days=3";
-const char* calendarURL = "https://script.googleusercontent.com/macros/echo?user_content_key=xxxxxxxxxxxx&lib=xxxxxxxxxxxxxxxxx";
+const char* weatherURL = "https://api.weatherapi.com/v1/forecast.json?key=xxxxxxxxxxxx&q=Stratford%2CCA&days=3";
+const char* calendarURL = "https://script.googleusercontent.com/macros/echo?user_content_key=xxxxxxx-xxxxxxxxxxx-xxxxxx-xxxxxxxxx&lib=xxxxxxxxxx";
 
 String convertUTCtoEST(const char* utcTimeStr) {
     struct tm timeinfo;
