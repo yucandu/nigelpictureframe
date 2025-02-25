@@ -14,6 +14,7 @@
 #include <Fonts/FreeSans9pt7b.h>
 #include <time.h>
 #include <met_icons_black_50x50.h>
+#include <iconsUI.h>
 #include <Arduino_JSON.h>
 #include <Wire.h>
 #include <ADS1115_WE.h>
@@ -49,15 +50,15 @@ Adafruit_BMP280 bmp;
 sensors_event_t humidity, temp;
 
 ADS1115_WE adc = ADS1115_WE(I2C_ADDRESS);
-
+float min_value;
 const char* ssid = "mikesnet";
 bool isSetNtp = false;
 const char* password = "springchicken";
 JSONVar events;
 #define ENABLE_GxEPD2_GFX 1
 #define TIME_TIMEOUT 20000
-#define sleeptimeSecs 60
-#define maxArray 24
+#define sleeptimeSecs 300
+#define maxArray 120
 
 #define every(interval) \
     static uint32_t __every__##interval = millis(); \
@@ -66,6 +67,20 @@ JSONVar events;
 typedef struct {
     float min_value;
     int hour;
+    // Pool and Bridge sensors
+    float temppool;
+    float bridgehum;
+    int bridgeco2;
+    float kw;
+    float windspeed;
+    float pm25in;
+    float pm25out;
+    int co2SCD;
+    int voc_index;
+    float in_temp;
+    float in_hum;
+    float pressure;
+    int winddir;
 } sensorReadings;
 
 // Add RTC_DATA_ATTR to preserve across deep sleep
@@ -79,9 +94,9 @@ const int daylightOffset_sec = 0;   //Replace with your daylight offset (secs)
 float t, h, pres, barx;
 float v41_value, v42_value, v62_value;
 RTC_DATA_ATTR bool firstrun = true;
-RTC_DATA_ATTR int runcount = 50;
-RTC_DATA_ATTR int minutecount = 0;
-RTC_DATA_ATTR int page = 2;
+RTC_DATA_ATTR int runcount = 1000;
+RTC_DATA_ATTR int minutecount = 12;
+RTC_DATA_ATTR int page = 1;
 float abshum;
 float minVal = 3.9;
 float maxVal = 4.2;
@@ -98,7 +113,7 @@ bool precip = false;
 float vBat;
 
 float temppool, pm25in, pm25out, bridgetemp, bridgehum, windspeed, winddir, windchill, windgust, humidex, bridgeco2, bridgeIrms, watts, kw, tempSHT, humSHT, co2SCD, presBME, neotemp, jojutemp, temptodraw;
-
+float voc_index;
 
 
 BLYNK_WRITE(V41) {
@@ -168,6 +183,10 @@ BLYNK_WRITE(V93) {
 
 BLYNK_WRITE(V94) {
   presBME = param.asFloat();
+}
+
+BLYNK_WRITE(V95) {
+  voc_index = param.asFloat();
 }
 
 void clearReadings() {
@@ -274,12 +293,21 @@ void gotosleep() {
 }
 
 BLYNK_CONNECTED() {
-  Blynk.syncVirtual(V41);
-  Blynk.syncVirtual(V42);
-  //Blynk.syncVirtual(V61);
-  Blynk.syncVirtual(V62);
-  //Blynk.syncVirtual(V93);
-  //Blynk.syncVirtual(V82);
+    Blynk.syncVirtual(V41);  // neotemp
+    Blynk.syncVirtual(V42);  // jojutemp
+    Blynk.syncVirtual(V62);  // bridgetemp
+
+    Blynk.syncVirtual(V61);  // temppool
+    Blynk.syncVirtual(V63);  // bridgehum
+    Blynk.syncVirtual(V67);  // pm25out
+    Blynk.syncVirtual(V71);  // pm25in
+    Blynk.syncVirtual(V77);  // bridgeco2
+    Blynk.syncVirtual(V78);  // windspeed
+    Blynk.syncVirtual(V79);  // winddir
+    Blynk.syncVirtual(V81);  // bridgeIrms
+    Blynk.syncVirtual(V93);  // co2SCD
+    Blynk.syncVirtual(V94);  // presBME
+    Blynk.syncVirtual(V95);  // voc_index
 }
 
 #include "esp_sntp.h"
@@ -292,12 +320,131 @@ void cbSyncTime(struct timeval *tv) { // callback function to show when NTP was 
 void initTime(String timezone) {
   configTzTime(timezone.c_str(), "time.cloudflare.com", "pool.ntp.org", "time.nist.gov");
 
-  while ((!isSetNtp) && (millis() < TIME_TIMEOUT)) {
-        delay(250);
-        }
+ // while ((!isSetNtp) && (millis() < TIME_TIMEOUT)) {
+ //       delay(250);
+ //       }
+}
+
+
+
+void drawSingleChart(int x, int y, float data[], int count, const char* title, bool rightAlign = false) {
+  // Reduced chart width by 20px
+  const int chartWidth = 110;    // Reduced from 130
+  const int chartHeight = 100;   // Keep same height
+  
+  // Find min/max
+  float min = 1e6, max = -1e6;
+  for(int i = 0; i < count; i++) {
+      if(data[i] < min && data[i] != 0) min = data[i];
+      if(data[i] > max) max = data[i];
+  }
+  if(max - min < 0.001) max = min + 0.001;  // Using 0.001 as minimum difference
+  
+  // Draw title
+  display.setFont(&FreeSans9pt7b);
+  display.setCursor(x + (rightAlign ? 75 : 5), y + 15);
+  display.print(title);
+  
+  // Draw y-axis labels
+  display.setFont();
+  char label[10];
+  snprintf(label, sizeof(label), "%.1f", max);
+  display.setCursor(x + (rightAlign ? 115 : 2), y + 25);
+  display.print(label);
+  snprintf(label, sizeof(label), "%.1f", min);
+  display.setCursor(x + (rightAlign ? 115 : 2), y + 25 + chartHeight);
+  display.print(label);
+  
+  // Draw chart
+  int prevX = 0, prevY = 0;
+  bool first = true;
+  for(int i = 0; i < count; i++) {
+      if(data[i] == 0) continue;
+      int plotX = x + (rightAlign ? 110 : 35) + (i * chartWidth / count);
+      int plotY = y + 25 + ((max - data[i]) * chartHeight / (max - min));
+      if(!first) display.drawLine(prevX, prevY, plotX, plotY, BLACK);
+      prevX = plotX;
+      prevY = plotY;
+      first = false;
+  }
+  
+  // Draw border
+  display.drawRect(x + (rightAlign ? 35 : 30), y + 25, chartWidth, chartHeight, BLACK);
+}
+void drawChartA() {
+  float data[maxArray];
+  display.fillScreen(GxEPD_WHITE);
+  
+  // Extract data arrays and draw charts - uses entire 300x400 display
+  // Left column (150px wide, ~133px height each)
+  for(int i = 0; i < numReadings; i++) data[i] = Readings[i].min_value;
+  drawSingleChart(0, 0, data, numReadings, "Min Temp");
+  
+  for(int i = 0; i < numReadings; i++) data[i] = Readings[i].windspeed;
+  drawSingleChart(0, 133, data, numReadings, "Wind");
+  
+  for(int i = 0; i < numReadings; i++) data[i] = Readings[i].pm25out;
+  drawSingleChart(0, 266, data, numReadings, "PM2.5 Out");
+  
+  // Right column
+  for(int i = 0; i < numReadings; i++) data[i] = Readings[i].temppool;
+  drawSingleChart(125, 0, data, numReadings, "Pool", true);
+  
+  for(int i = 0; i < numReadings; i++) data[i] = Readings[i].pressure;
+  drawSingleChart(125, 133, data, numReadings, "Press", true);
+  
+  for(int i = 0; i < numReadings; i++) data[i] = Readings[i].bridgehum;
+  drawSingleChart(125, 266, data, numReadings, "Bridge", true);
+}
+
+void drawChartB() {
+  float data[maxArray];
+  display.fillScreen(GxEPD_WHITE);
+  
+  // Left column
+  for(int i = 0; i < numReadings; i++) data[i] = Readings[i].in_temp;
+  drawSingleChart(0, 0, data, numReadings, "In Temp");
+  
+  for(int i = 0; i < numReadings; i++) data[i] = Readings[i].in_hum;
+  drawSingleChart(0, 133, data, numReadings, "In Hum");
+  
+  for(int i = 0; i < numReadings; i++) data[i] = Readings[i].co2SCD;
+  drawSingleChart(0, 266, data, numReadings, "CO2");
+  
+  // Right column
+  for(int i = 0; i < numReadings; i++) data[i] = Readings[i].voc_index;
+  drawSingleChart(150, 0, data, numReadings, "VOC", true);
+  
+  for(int i = 0; i < numReadings; i++) data[i] = Readings[i].kw;
+  drawSingleChart(150, 133, data, numReadings, "Power", true);
+  
+  for(int i = 0; i < numReadings; i++) data[i] = Readings[i].pm25in;
+  drawSingleChart(150, 266, data, numReadings, "PM2.5 In", true);
+}
+
+
+void drawBusy() {
+  // Position just left of battery icon
+  display.fillScreen(GxEPD_WHITE);
+  int xOffset = 5;
+  int yOffset = 3;
+  int x = DISP_WIDTH - 38 - 2 - xOffset - 15; // 15 pixels left of battery
+  int y = DISP_HEIGHT - 10 - yOffset;
+  
+  // Draw hourglass shape (8x10 pixels)
+  display.drawLine(x, y, x+6, y, BLACK);       // Top line
+  display.drawLine(x, y+8, x+6, y+8, BLACK);   // Bottom line
+  display.drawLine(x, y, x+3, y+4, BLACK);     // Top left diagonal
+  display.drawLine(x+6, y, x+3, y+4, BLACK);   // Top right diagonal
+  display.drawLine(x, y+8, x+3, y+4, BLACK);   // Bottom left diagonal
+  display.drawLine(x+6, y+8, x+3, y+4, BLACK); // Bottom right diagonal
+  
+  // Update only the hourglass area
+  display.displayWindow(x-1, y-1, 9, 11);
 }
 
 void startWifi() {
+  drawBusy();
   //display.setTextSize(2);
   //display.setPartialWindow(0, 0, display.width(), display.height());
   //display.setCursor(0, 0);
@@ -385,6 +532,7 @@ void startWebserver() {
   display.print("RSSI: ");
   display.println(WiFi.RSSI());
   display.display(true);
+  delay(500);
 }
 
 void wipeScreen() {
@@ -409,8 +557,8 @@ void wipeScreen() {
 double mapf(float x, float in_min, float in_max, float out_min, float out_max) {
   return (x - in_min) * (out_max - out_min) / (in_max - in_min) + out_min;
 }
-const char* weatherURL = "https://api.weatherapi.com/v1/forecast.json?key=xxxxxxxxxxxx&q=Stratford%2CCA&days=3";
-const char* calendarURL = "https://script.googleusercontent.com/macros/echo?user_content_key=xxxxxxx-xxxxxxxxxxx-xxxxxx-xxxxxxxxx&lib=xxxxxxxxxx";
+const char* weatherURL = "https://api.weatherapi.com/v1/forecast.json?key=xxxxxxxxxx&q=xxxxxxxxxxxxx%2CCA&days=3";
+const char* calendarURL = "https://script.googleusercontent.com/macros/echo?user_content_key=x-x-x-x&lib=x";
 
 String convertUTCtoEST(const char* utcTimeStr) {
     struct tm timeinfo;
@@ -654,6 +802,7 @@ void drawWeatherForecast() {
     i++;
   }
 }
+
 
 
 void drawTopSensorRow() {
@@ -940,13 +1089,82 @@ void doMainDisplay() {
   gotosleep();
 }
 
-
+void displayIcons() {
+    // Draw icons bitmap
+    display.fillScreen(WHITE);
+    display.drawInvertedBitmap(0, 0, iconsUI, 300, 400, BLACK);
+    
+    // Set small font
+    display.setFont(&FreeSans9pt7b);
+    
+    // Column positions
+    const int col1 = 75;  // After icons
+    const int col2 = 210; // Middle of display
+    const int rowHeight = 55;
+    char buffer[32];
+    
+    // Row 1: Temperatures
+    display.setCursor(col1, rowHeight);
+    snprintf(buffer, sizeof(buffer), "%.1f°C", t);
+    display.print(buffer);
+    display.setCursor(col2, rowHeight);
+    snprintf(buffer, sizeof(buffer), "%.1f°C", min_value);
+    display.print(buffer);
+    
+    // Row 2: Humidity
+    display.setCursor(col1, rowHeight * 2);
+    snprintf(buffer, sizeof(buffer), "%.0f%%", h);
+    display.print(buffer);
+    display.setCursor(col2, rowHeight * 2);
+    snprintf(buffer, sizeof(buffer), "%.0f%%", bridgehum);
+    display.print(buffer);
+    
+    // Row 3: Wind
+    display.setCursor(col1, rowHeight * 3);
+    snprintf(buffer, sizeof(buffer), "%.1f km/h", windspeed);
+    display.print(buffer);
+    display.setCursor(col2, rowHeight * 3);
+    snprintf(buffer, sizeof(buffer), "%d°", winddir);
+    display.print(buffer);
+    
+    // Row 4: PM2.5
+    display.setCursor(col1, rowHeight * 4);
+    snprintf(buffer, sizeof(buffer), "%.0f", pm25in);
+    display.print(buffer);
+    display.setCursor(col2, rowHeight * 4);
+    snprintf(buffer, sizeof(buffer), "%.0f", pm25out);
+    display.print(buffer);
+    
+    // Row 5: CO2
+    display.setCursor(col1, rowHeight * 5);
+    snprintf(buffer, sizeof(buffer), "%d", co2SCD);
+    display.print(buffer);
+    display.setCursor(col2, rowHeight * 5);
+    snprintf(buffer, sizeof(buffer), "%d", bridgeco2);
+    display.print(buffer);
+    
+    // Row 6: Pressure & Power
+    display.setCursor(col1, rowHeight * 6);
+    snprintf(buffer, sizeof(buffer), "%.0f kPa", pres);
+    display.print(buffer);
+    display.setCursor(col2, rowHeight * 6);
+    snprintf(buffer, sizeof(buffer), "%.1f kW", kw);
+    display.print(buffer);
+    
+    // Row 7: Pool & VOC
+    display.setCursor(col1, rowHeight * 7);
+    snprintf(buffer, sizeof(buffer), "%.1f°C", temppool);
+    display.print(buffer);
+    display.setCursor(col2, rowHeight * 7);
+    snprintf(buffer, sizeof(buffer), "%d", voc_index);
+    display.print(buffer);
+}
 
 
 void takeSamples() {
   if (WiFi.status() == WL_CONNECTED) {
 
-    float min_value = findLowestNonZero(neotemp, jojutemp, bridgetemp);
+     min_value = findLowestNonZero(neotemp, jojutemp, bridgetemp);
     if (min_value != 999) {
       time_t now = time(nullptr);
       struct tm timeinfo;
@@ -958,8 +1176,20 @@ void takeSamples() {
       }
       
       // Record new reading
-      Readings[numReadings].min_value = min_value;
       Readings[numReadings].hour = timeinfo.tm_hour;
+      Readings[numReadings].min_value = min_value;
+      Readings[numReadings].temppool = temppool;
+      Readings[numReadings].bridgehum = bridgehum;
+      Readings[numReadings].pm25out = pm25out;
+      Readings[numReadings].pm25in = pm25in;
+      Readings[numReadings].bridgeco2 = bridgeco2;
+      Readings[numReadings].windspeed = windspeed;
+      Readings[numReadings].kw = kw;
+      Readings[numReadings].co2SCD = co2SCD;
+      Readings[numReadings].voc_index = voc_index;
+      Readings[numReadings].in_temp = t;
+      Readings[numReadings].in_hum = h;
+      Readings[numReadings].pressure = pres;
       if (numReadings < maxArray - 1) {
           numReadings++;
       }
@@ -1013,60 +1243,162 @@ void setup() {
 
   if (runcount >= 1000) {
     display.clearScreen();
-    if (page == 2) {
-      wipeScreen();
-    }
     runcount = 0;
   }
   runcount++;
   display.setTextColor(GxEPD_BLACK, GxEPD_WHITE);
 
+
   if (GPIO_reason >= 0) {
-      delay(50);
-      if (digitalRead(0) && digitalRead(1) && digitalRead(3)) {
-        while (digitalRead(0) && digitalRead(1) && digitalRead(3)) {
-          delay(10);
-          if (millis() > 3000) {
-            startWebserver();
-            return;
-          }
+    unsigned long startTime = millis();
+    while (digitalRead(0) == HIGH) {
+        if (digitalRead(1) == HIGH && digitalRead(3) == HIGH) {
+            delay(3000);
+            if (digitalRead(0) == HIGH && digitalRead(1) == HIGH && digitalRead(3) == HIGH) {
+                displayMenu();
+                return;
+            }
         }
-        startWifi();
-        takeSamples();
-        doMainDisplay();
-      }
-      gotosleep();
+        if (millis() - startTime > 5000) break;
+    }
+    gotosleep();
+  } else {    // When waking from timer or first boot
+      startWifi();
+      takeSamples();
+      
+      switch (page) {
+        case 1:
+            
+            if (minutecount >= 12) {
+                doMainDisplay();
+                minutecount = 0;
+            }
+            else {drawTopSensorRow();}
+            minutecount++;
+            break;
+        case 2:
+            drawChartA();
+            display.display(true);
+            break;
+        case 3:
+            drawChartB();
+            display.display(true);
+            break;
+        case 4:
+            displayIcons();
+            display.display(true);
+            break;
+    }
   }
-else{
-        if (firstrun) {
-          firstrun = false;
-        startWifi();
-        takeSamples();
-        doMainDisplay();
-        }
-        else if (minutecount > 59) {
-          minutecount = 0;
-          startWifi();
-          takeSamples();
-          doMainDisplay();
-        }
-        else {
-          minutecount++;
-          drawTopSensorRow();
-          gotosleep();
-        }
-
-
-  }
-//gotosleep();
+  gotosleep();
 }
 
+
+int selection = 0;
+int numOptions = 5;  // Increased from 4 to 5
+const char* menuOptions[] = {
+    "Weather & Calendar",
+    "Indoor Charts",
+    "Outdoor Charts",
+    "Display Icons",
+    "Start OTA"
+};
+
+// Add these globals at top with other variables
+//RTC_DATA_ATTR bool menuActive = false;
+unsigned long lastButtonCheck = 0;
+const int buttonDebounce = 200;
+
+// Modify displayMenu() to just draw the menu
+void displayMenu() {
+  display.setFont();
+  display.setTextSize(2);
+  display.fillScreen(GxEPD_WHITE);
+  
+  // Calculate window size based on actual font size (7x8 * 2)
+  const int charWidth = 14;  // 7 pixels * 2
+  const int charHeight = 16; // 8 pixels * 2
+  const int maxChars = 19;   // "Weather & Calendar"
+  const int windowWidth = (charWidth * maxChars) + 20;  // Add padding
+  const int windowHeight = (numOptions * 30) + 20;      // 30px per option + padding
+  
+  // Center window on screen
+  const int x = (DISP_WIDTH - windowWidth) / 2;
+  const int y = (DISP_HEIGHT - windowHeight) / 2;
+  
+  // Draw menu options
+  for(int i = 0; i < numOptions; i++) {
+      display.setCursor(x + 10, y + 25 + (i * 30));  // Start text below top border
+      if(i == selection) {
+          display.setTextColor(WHITE, BLACK);
+      } else {
+          display.setTextColor(BLACK, WHITE);
+      }
+      display.print(menuOptions[i]);
+  }
+  
+  // Reset font settings
+  display.setTextSize(1);
+  display.setTextColor(BLACK, WHITE);
+  
+  // Draw border around menu area
+  display.drawRect(x, y, windowWidth, windowHeight, BLACK);
+  
+  // Update only the menu area
+  display.displayWindow(x-1, y-1, windowWidth+2, windowHeight+2);
+}
+
+void updateMenu() {
+  every(100){
+      if(digitalRead(0)) {
+          selection--;
+          if (selection < 0){selection = numOptions-1;}  // Changed from 1 to 0
+          displayMenu();
+      } 
+      
+      if(digitalRead(3)) {
+          selection++;
+          if (selection > numOptions-1){selection = 0;}  // Changed from numOptions/1
+          displayMenu();
+      } 
+
+      if(digitalRead(1)) {
+          if(selection == 4) {  // Changed from 4 to 3 since array is 0-based
+              startWebserver();
+          } else {
+              page = selection + 1;  // Add 1 to convert from 0-based to 1-based
+              switch (page) {
+                case 1:
+                    
+                    if (minutecount >= 12) {
+                        doMainDisplay();
+                        minutecount = 0;
+                    }
+                    else {drawTopSensorRow();}
+                    minutecount++;
+                    break;
+                case 2:
+                    drawChartA();
+                    display.display(true);
+                    break;
+                case 3:
+                    drawChartB();
+                    display.display(true);
+                    break;
+                case 4:
+                    displayIcons();
+                    display.display(true);
+                    break;
+            }
+            gotosleep();
+          }
+      }
+  }
+}
+// Modify the menu activation in setup()
+
+// Modify loop()
 void loop() {
-  ArduinoOTA.handle();
-  if (digitalRead(0)) { 
-    startWifi();
-    takeSamples();
-    doMainDisplay();
-    gotosleep(); }
-  delay(250);
+    if (WiFi.status() == WL_CONNECTED) {ArduinoOTA.handle();}
+    updateMenu();
 }
