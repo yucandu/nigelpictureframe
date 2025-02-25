@@ -328,48 +328,70 @@ void initTime(String timezone) {
 
 
 void drawSingleChart(int x, int y, float data[], int count, const char* title, bool rightAlign = false) {
-  // Reduced chart width by 20px
-  const int chartWidth = 110;    // Reduced from 130
-  const int chartHeight = 100;   // Keep same height
+  const int chartWidth = 110;    
+  const int chartHeight = 100;   
+  const int xOffset = 28;  // Changed from 35 to 28
   
-  // Find min/max
+  // Find min/max and count data points
   float min = 1e6, max = -1e6;
+  int dataPoints = 0;
   for(int i = 0; i < count; i++) {
-      if(data[i] < min && data[i] != 0) min = data[i];
+      if(data[i] == 0) continue;
+      if(data[i] < min) min = data[i];
       if(data[i] > max) max = data[i];
+      dataPoints++;
   }
-  if(max - min < 0.001) max = min + 0.001;  // Using 0.001 as minimum difference
+  if(max - min < 0.001) max = min + 0.001;
   
-  // Draw title
+  // Draw title and y-axis labels
   display.setFont(&FreeSans9pt7b);
   display.setCursor(x + (rightAlign ? 75 : 5), y + 15);
   display.print(title);
   
-  // Draw y-axis labels
   display.setFont();
   char label[10];
   snprintf(label, sizeof(label), "%.1f", max);
-  display.setCursor(x + (rightAlign ? 115 : 2), y + 25);
+  display.setCursor(x + 2, y + 25);
   display.print(label);
   snprintf(label, sizeof(label), "%.1f", min);
-  display.setCursor(x + (rightAlign ? 115 : 2), y + 25 + chartHeight);
+  display.setCursor(x + 2, y + 25 + chartHeight - 7);  // Moved up 7 pixels
   display.print(label);
   
-  // Draw chart
+  // Draw chart border first
+  display.drawRect(x + xOffset, y + 25, chartWidth, chartHeight, BLACK);
+  
+  // Only draw hour ticks if we have enough data points
+  if(dataPoints >= 12) {  // One hour worth of data
+      int hours = dataPoints / 12;
+      for(int h = 0; h < hours; h++) {
+          int tickX = x + xOffset + (h * 12 * chartWidth / count);
+          display.drawLine(tickX, y + 25 + chartHeight, tickX, y + 25 + chartHeight + 3, BLACK);
+          
+          // Draw hour label every 6 hours (72 data points)
+          if(h > 0 && h % 6 == 0 && h * 12 < count) {
+              char hourLabel[3];
+              snprintf(hourLabel, sizeof(hourLabel), "%d", h);
+              display.setCursor(tickX - 3, y + 25 + chartHeight + 5);
+              display.print(hourLabel);
+          }
+      }
+  }
+  
+  // Draw data points
   int prevX = 0, prevY = 0;
   bool first = true;
   for(int i = 0; i < count; i++) {
       if(data[i] == 0) continue;
-      int plotX = x + (rightAlign ? 110 : 35) + (i * chartWidth / count);
+      int plotX = x + xOffset + (i * chartWidth / count);
       int plotY = y + 25 + ((max - data[i]) * chartHeight / (max - min));
-      if(!first) display.drawLine(prevX, prevY, plotX, plotY, BLACK);
+      
+      if(!first) {
+          display.drawLine(prevX, prevY, plotX, plotY, BLACK);
+      }
       prevX = plotX;
       prevY = plotY;
       first = false;
   }
-  
-  // Draw border
-  display.drawRect(x + (rightAlign ? 35 : 30), y + 25, chartWidth, chartHeight, BLACK);
 }
 void drawChartA() {
   float data[maxArray];
@@ -378,7 +400,7 @@ void drawChartA() {
   // Extract data arrays and draw charts - uses entire 300x400 display
   // Left column (150px wide, ~133px height each)
   for(int i = 0; i < numReadings; i++) data[i] = Readings[i].min_value;
-  drawSingleChart(0, 0, data, numReadings, "Min Temp");
+  drawSingleChart(0, 0, data, numReadings, "Out Temp");
   
   for(int i = 0; i < numReadings; i++) data[i] = Readings[i].windspeed;
   drawSingleChart(0, 133, data, numReadings, "Wind");
@@ -388,13 +410,13 @@ void drawChartA() {
   
   // Right column
   for(int i = 0; i < numReadings; i++) data[i] = Readings[i].temppool;
-  drawSingleChart(125, 0, data, numReadings, "Pool", true);
+  drawSingleChart(150, 0, data, numReadings, "Pool Temp", false);
   
   for(int i = 0; i < numReadings; i++) data[i] = Readings[i].pressure;
-  drawSingleChart(125, 133, data, numReadings, "Press", true);
+  drawSingleChart(150, 133, data, numReadings, "Pressure", false);
   
   for(int i = 0; i < numReadings; i++) data[i] = Readings[i].bridgehum;
-  drawSingleChart(125, 266, data, numReadings, "Bridge", true);
+  drawSingleChart(150, 266, data, numReadings, "Dewpoint", false);
 }
 
 void drawChartB() {
@@ -413,13 +435,13 @@ void drawChartB() {
   
   // Right column
   for(int i = 0; i < numReadings; i++) data[i] = Readings[i].voc_index;
-  drawSingleChart(150, 0, data, numReadings, "VOC", true);
+  drawSingleChart(150, 0, data, numReadings, "VOC", false);
   
   for(int i = 0; i < numReadings; i++) data[i] = Readings[i].kw;
-  drawSingleChart(150, 133, data, numReadings, "Power", true);
+  drawSingleChart(150, 133, data, numReadings, "Power", false);
   
   for(int i = 0; i < numReadings; i++) data[i] = Readings[i].pm25in;
-  drawSingleChart(150, 266, data, numReadings, "PM2.5 In", true);
+  drawSingleChart(150, 266, data, numReadings, "PM2.5 In", false);
 }
 
 
@@ -557,7 +579,7 @@ void wipeScreen() {
 double mapf(float x, float in_min, float in_max, float out_min, float out_max) {
   return (x - in_min) * (out_max - out_min) / (in_max - in_min) + out_min;
 }
-const char* weatherURL = "https://api.weatherapi.com/v1/forecast.json?key=xxxxxxxxxx&q=xxxxxxxxxxxxx%2CCA&days=3";
+const char* weatherURL = "https://api.weatherapi.com/v1/forecast.json?key=x&q=x%2CCA&days=3";
 const char* calendarURL = "https://script.googleusercontent.com/macros/echo?user_content_key=x-x-x-x&lib=x";
 
 String convertUTCtoEST(const char* utcTimeStr) {
@@ -941,17 +963,32 @@ void drawHourlyChart() {
          
          // Draw recorded temperature circles for day 0
          if (d == 0 && numReadings > 0) {
-             for (int i = 0; i < numReadings; i++) {
-                 int h = Readings[i].hour;
-                 float temp = Readings[i].min_value;
-                 int y = chartYBottom - (int)(((temp - globalMin) / (globalMax - globalMin)) * chartHeight);
-                 int x = xOffset + (int)((float)h / 23.0 * (cellWidth - 1));
-                 
-                 // Draw two concentric circles
-                 //display.drawCircle(x, y, 3, BLACK);
-                 display.drawCircle(x, y, 1, BLACK);
-             }
-         }
+          struct tm timeinfo;
+          time_t now = time(nullptr);
+          localtime_r(&now, &timeinfo);
+          int currentDay = timeinfo.tm_mday;
+          
+          for (int h = 0; h < 24; h++) {  // Loop through each hour
+              float sum = 0;
+              int count = 0;
+              
+              // Find all readings for this hour
+              for (int i = 0; i < numReadings; i++) {
+                  if (Readings[i].hour == h) {
+                      sum += Readings[i].min_value;
+                      count++;
+                  }
+              }
+              
+              // If we have readings for this hour, draw the average
+              if (count > 0) {
+                  float avgTemp = sum / count;
+                  int y = chartYBottom - (int)(((avgTemp - globalMin) / (globalMax - globalMin)) * chartHeight);
+                  int x = xOffset + (int)((float)h / 23.0 * (cellWidth - 1));
+                  display.drawCircle(x, y, 1, BLACK);
+              }
+          }
+      }
          
          // Draw cell border
          display.drawRect(xOffset, chartYTop, cellWidth, chartHeight, BLACK);
@@ -982,80 +1019,72 @@ void fetchEvents() {
 void displayEvents() {
   String lastDate = "";
   int printedEvents = 0;
-  int y = 212;  // Starting y-coordinate for calendar events
-  int eventCount = events.length(); // Get the number of events
+  int y = 212;
+  int eventCount = events.length();
 
   for (int i = 0; i < eventCount && printedEvents < 3; i++) {
-    JSONVar event = events[i];
-    String title = String((const char*)event["title"]);
-    String startTime = String((const char*)event["startTime"]);
+      JSONVar event = events[i];
+      String title = String((const char*)event["title"]);
+      String startTimeUTC = String((const char*)event["startTime"]);
+      
+      // Convert UTC time to local time
+      String localTime = convertUTCtoEST(startTimeUTC.c_str());
+      
+      int year, month, day, hour, minute;
+      if (sscanf(startTimeUTC.c_str(), "%4d-%2d-%2dT%2d:%2d", &year, &month, &day, &hour, &minute) == 5) {
+          struct tm t = {0};
+          t.tm_year = year - 1900;
+          t.tm_mon = month - 1;
+          t.tm_mday = day;
+          t.tm_hour = hour;
+          t.tm_min = minute;
+          t.tm_sec = 0;
+          t.tm_isdst = -1;
+          
+          // Convert UTC to local time
+          time_t utc = mktime(&t);
+          utc += gmtOffset_sec + daylightOffset_sec;  // Add timezone offset
+          localtime_r(&utc, &t);  // Convert to local time
 
-    int year, month, day, hour, minute;
-    if (sscanf(startTime.c_str(), "%4d-%2d-%2dT%2d:%2d", &year, &month, &day, &hour, &minute) == 5) {
-      struct tm t;
-      t.tm_year = year - 1900;
-      t.tm_mon = month - 1;
-      t.tm_mday = day;
-      t.tm_hour = hour;
-      t.tm_min = minute;
-      t.tm_sec = 0;
-      t.tm_isdst = -1;
-      mktime(&t);
+          // Format date header
+          char dateBuffer[40];
+          strftime(dateBuffer, sizeof(dateBuffer), "%A, %B %d", &t);
+          String fullDateStr = dateBuffer;
 
-      // Format date header: "DayOfWeek, MonthName Day"
-      char dateBuffer[40];
-      strftime(dateBuffer, sizeof(dateBuffer), "%A, %B %d", &t);
-      String fullDateStr = dateBuffer;
+          // Print new date header if different
+          if (lastDate != fullDateStr) {
+              y += 8;
+              lastDate = fullDateStr;
+              display.setFont(FONT2);
+              display.setCursor(5, y);
+              display.println(fullDateStr);
+              y += 20;
+          }
 
-      // Print new date header if different from previous event
-      if (lastDate != fullDateStr) {
-        y+=8;
-        lastDate = fullDateStr;
-        display.setFont(FONT2);
-        display.setCursor(5, y);
-        display.println(fullDateStr);
-        y += 20;  // Adjust spacing after date header
+          // Build event text with converted local time
+          String eventText = localTime + " - " + title;
+
+          // Word wrap and display
+          const int maxWidth = 290;
+          char wrappedText[512];
+          display.setCursor(10 + 8, y);
+          wrapWords(eventText.c_str(), maxWidth, wrappedText, sizeof(wrappedText));
+          display.setFont(&FreeSans9pt7b);
+
+          char *line = strtok(wrappedText, "\n");
+          while (line != NULL) {
+              if (line == wrappedText) {
+                  display.fillCircle(10, y - 5, 2, BLACK);
+              }
+              display.setCursor(10 + 8, y);
+              display.println(line);
+              y += 19;
+              line = strtok(NULL, "\n");
+          }
+          printedEvents++;
       }
-
-      // Format time in 12-hour AM/PM (remove any leading zero)
-      char timeBuffer[10];
-      strftime(timeBuffer, sizeof(timeBuffer), "%I:%M %p", &t);
-      String timeStr = timeBuffer;
-      if (timeStr.charAt(0) == '0') {
-        timeStr = timeStr.substring(1);
-      }
-
-      // Build the full event text as "time - title"
-      String eventText = timeStr + " - " + title;
-
-      // Use wrapWords() to insert newlines so words aren't split
-      const int maxWidth = 290;
-      char wrappedText[512];
-      display.setCursor(10 + 8, y);
-      wrapWords(eventText.c_str(), maxWidth, wrappedText, sizeof(wrappedText));
-      display.setFont(&FreeSans9pt7b);
-
-      // Instead of printing wrappedText as one string, split it into lines and print each line with println.
-      char *line = strtok(wrappedText, "\n");
-      while (line != NULL) {
-        // Draw bullet only on the first line.
-        if (line == wrappedText) {
-          int bulletX = 10;
-          int bulletY = y - 5;  // Adjust bullet position
-          display.fillCircle(bulletX, bulletY, 2, BLACK);
-        }
-        display.setCursor(10 + 8, y);
-        display.println(line);
-        y += 19;  // Advance for each line (adjust as needed)
-        line = strtok(NULL, "\n");
-      }
-      printedEvents++;
-    } else {
-      display.println("Failed to parse startTime");
-    }
   }
 }
-
 
 
 
@@ -1089,77 +1118,144 @@ void doMainDisplay() {
   gotosleep();
 }
 
-void displayIcons() {
-    // Draw icons bitmap
-    display.fillScreen(WHITE);
-    display.drawInvertedBitmap(0, 0, iconsUI, 300, 400, BLACK);
-    
-    // Set small font
-    display.setFont(&FreeSans9pt7b);
-    
-    // Column positions
-    const int col1 = 75;  // After icons
-    const int col2 = 210; // Middle of display
-    const int rowHeight = 55;
-    char buffer[32];
-    
-    // Row 1: Temperatures
-    display.setCursor(col1, rowHeight);
-    snprintf(buffer, sizeof(buffer), "%.1f°C", t);
-    display.print(buffer);
-    display.setCursor(col2, rowHeight);
-    snprintf(buffer, sizeof(buffer), "%.1f°C", min_value);
-    display.print(buffer);
-    
-    // Row 2: Humidity
-    display.setCursor(col1, rowHeight * 2);
-    snprintf(buffer, sizeof(buffer), "%.0f%%", h);
-    display.print(buffer);
-    display.setCursor(col2, rowHeight * 2);
-    snprintf(buffer, sizeof(buffer), "%.0f%%", bridgehum);
-    display.print(buffer);
-    
-    // Row 3: Wind
-    display.setCursor(col1, rowHeight * 3);
-    snprintf(buffer, sizeof(buffer), "%.1f km/h", windspeed);
-    display.print(buffer);
-    display.setCursor(col2, rowHeight * 3);
-    snprintf(buffer, sizeof(buffer), "%d°", winddir);
-    display.print(buffer);
-    
-    // Row 4: PM2.5
-    display.setCursor(col1, rowHeight * 4);
-    snprintf(buffer, sizeof(buffer), "%.0f", pm25in);
-    display.print(buffer);
-    display.setCursor(col2, rowHeight * 4);
-    snprintf(buffer, sizeof(buffer), "%.0f", pm25out);
-    display.print(buffer);
-    
-    // Row 5: CO2
-    display.setCursor(col1, rowHeight * 5);
-    snprintf(buffer, sizeof(buffer), "%d", co2SCD);
-    display.print(buffer);
-    display.setCursor(col2, rowHeight * 5);
-    snprintf(buffer, sizeof(buffer), "%d", bridgeco2);
-    display.print(buffer);
-    
-    // Row 6: Pressure & Power
-    display.setCursor(col1, rowHeight * 6);
-    snprintf(buffer, sizeof(buffer), "%.0f kPa", pres);
-    display.print(buffer);
-    display.setCursor(col2, rowHeight * 6);
-    snprintf(buffer, sizeof(buffer), "%.1f kW", kw);
-    display.print(buffer);
-    
-    // Row 7: Pool & VOC
-    display.setCursor(col1, rowHeight * 7);
-    snprintf(buffer, sizeof(buffer), "%.1f°C", temppool);
-    display.print(buffer);
-    display.setCursor(col2, rowHeight * 7);
-    snprintf(buffer, sizeof(buffer), "%d", voc_index);
-    display.print(buffer);
+String windDirection(int temp_wind_deg)  //Source http://snowfence.umn.edu/Components/winddirectionanddegreeswithouttable3.htm
+ {
+  switch (temp_wind_deg) {
+    case 0 ... 11:
+      return "N";
+      break;
+    case 12 ... 33:
+      return "NNE";
+      break;
+    case 34 ... 56:
+      return "NE";
+      break;
+    case 57 ... 78:
+      return "ENE";
+      break;
+    case 79 ... 101:
+      return "E";
+      break;
+    case 102 ... 123:
+      return "ESE";
+      break;
+    case 124 ... 146:
+      return "SE";
+      break;
+    case 147 ... 168:
+      return "SSE";
+      break;
+    case 169 ... 191:
+      return "S";
+      break;
+    case 192 ... 213:
+      return "SSW";
+      break;
+    case 214 ... 236:
+      return "SW";
+      break;
+    case 237 ... 258:
+      return "WSW";
+      break;
+    case 259 ... 281:
+      return "W";
+      break;
+    case 282 ... 303:
+      return "WNW";
+      break;
+    case 304 ... 326:
+      return "NW";
+      break;
+    case 327 ... 348:
+      return "NNW";
+      break;
+    case 349 ... 360:
+      return "N";
+      break;
+    default:
+      return "error";
+      break;
+  }
 }
 
+void displayIcons() {
+  // Draw icons bitmap
+  display.fillScreen(WHITE);
+  display.drawInvertedBitmap(0, 0, iconsUI, 300, 400, BLACK);
+  
+  // Set small font
+  display.setFont(&FreeSans9pt7b);
+  
+  // Column positions
+  const int col1 = 75;  // After icons
+  const int col2 = 210; // Middle of display
+  const int rowHeight = 55; // Reduced from 55 to move everything up
+  const int startY = -15;  // Start higher up
+  char buffer[32];
+  
+  // Row 1: Temperatures
+  display.setCursor(col1, startY + rowHeight);
+  snprintf(buffer, sizeof(buffer), "%.1f°C", t);
+  display.print(buffer);
+  display.setCursor(col2, startY + rowHeight);
+  snprintf(buffer, sizeof(buffer), "%.1f°C", min_value);
+  display.print(buffer);
+  
+  // Row 2: Humidity
+  display.setCursor(col1, startY + rowHeight * 2);
+  snprintf(buffer, sizeof(buffer), "%.0f%%", h);
+  display.print(buffer);
+  display.setCursor(col2, startY + rowHeight * 2);
+  snprintf(buffer, sizeof(buffer), "%.1f%°", bridgehum);
+  display.print(buffer);
+  
+  // Row 3: Wind
+  display.setCursor(col1, startY + rowHeight * 3);
+  snprintf(buffer, sizeof(buffer), "%.0f kph", windspeed);
+  display.print(buffer);
+  display.setCursor(col2, startY + rowHeight * 3);
+  //snprintf(buffer, sizeof(buffer), "%d°", winddir);
+  display.print(windDirection(winddir));
+  
+  // Row 4: PM2.5
+  display.setCursor(col1, startY + rowHeight * 4);
+  snprintf(buffer, sizeof(buffer), "%.0fg", pm25in);
+  display.print(buffer);
+  display.setCursor(col2, startY + rowHeight * 4);
+  snprintf(buffer, sizeof(buffer), "%.0fg", pm25out);
+  display.print(buffer);
+  
+  // Row 5: CO2
+  display.setCursor(col1, startY + rowHeight * 5);
+  snprintf(buffer, sizeof(buffer), "%.0f ppm", co2SCD);
+  display.print(buffer);
+  display.setCursor(col2, startY + rowHeight * 5);
+  snprintf(buffer, sizeof(buffer), "%.0f ppm", bridgeco2);
+  display.print(buffer);
+  
+  // Row 6: Pressure & Power
+  display.setCursor(col1, startY + rowHeight * 6);
+  snprintf(buffer, sizeof(buffer), "%.0f kPa", pres);
+  display.print(buffer);
+  display.setCursor(col2, startY + rowHeight * 6);
+  snprintf(buffer, sizeof(buffer), "%.1f kW", kw);
+  display.print(buffer);
+  
+  // Row 7: Pool & VOC
+  display.setCursor(col1, startY + rowHeight * 7);
+  snprintf(buffer, sizeof(buffer), "%.1f°C", temppool);
+  display.print(buffer);
+  display.setCursor(col2, startY + rowHeight * 7);
+  snprintf(buffer, sizeof(buffer), "%.0f", voc_index);
+  display.print(buffer);
+
+  // For drawSingleChart modifications, change:
+  // In drawChartA() and drawChartB(), change:
+  // drawSingleChart(125, ... // for right column charts
+  // and in drawSingleChart():
+  // display.setCursor(x + (rightAlign ? 2 : 2), y + 25); // for y-axis labels
+  // This puts all y-axis labels on the left side
+}
 
 void takeSamples() {
   if (WiFi.status() == WL_CONNECTED) {
@@ -1253,7 +1349,7 @@ void setup() {
     unsigned long startTime = millis();
     while (digitalRead(0) == HIGH) {
         if (digitalRead(1) == HIGH && digitalRead(3) == HIGH) {
-            delay(3000);
+            delay(1500);
             if (digitalRead(0) == HIGH && digitalRead(1) == HIGH && digitalRead(3) == HIGH) {
                 displayMenu();
                 return;
@@ -1298,8 +1394,8 @@ int selection = 0;
 int numOptions = 5;  // Increased from 4 to 5
 const char* menuOptions[] = {
     "Weather & Calendar",
-    "Indoor Charts",
     "Outdoor Charts",
+    "Indoor Charts",
     "Display Icons",
     "Start OTA"
 };
@@ -1349,7 +1445,7 @@ void displayMenu() {
 }
 
 void updateMenu() {
-  every(100){
+  every(50){
       if(digitalRead(0)) {
           selection--;
           if (selection < 0){selection = numOptions-1;}  // Changed from 1 to 0
@@ -1369,13 +1465,10 @@ void updateMenu() {
               page = selection + 1;  // Add 1 to convert from 0-based to 1-based
               switch (page) {
                 case 1:
-                    
-                    if (minutecount >= 12) {
-                        doMainDisplay();
-                        minutecount = 0;
-                    }
-                    else {drawTopSensorRow();}
-                    minutecount++;
+                    wipeScreen();
+                    startWifi();
+                    takeSamples();
+                    doMainDisplay();
                     break;
                 case 2:
                     drawChartA();
@@ -1386,6 +1479,9 @@ void updateMenu() {
                     display.display(true);
                     break;
                 case 4:
+                    displayIcons();
+                    startWifi();
+                    takeSamples();
                     displayIcons();
                     display.display(true);
                     break;
