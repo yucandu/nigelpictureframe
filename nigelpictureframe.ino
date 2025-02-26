@@ -710,36 +710,27 @@ String httpGETRequest(const char* serverName) {
 void getWeatherForecast() {
   std::unique_ptr<WiFiClientSecure> client(new WiFiClientSecure);
   client->setInsecure();
-
-  // Instantiate the streaming JSON parser and our custom WeatherAPI handler.
-  ArudinoStreamParser parser;         // Declare the stream parser.
-  WeatherAPIHandler custom_handler;     // Our handler (which populates myForecasts).
-  parser.setHandler(&custom_handler);   // Link the parser to the handler.
-  HTTPClient http;
-  // Begin the HTTP request to WeatherAPI.
-  http.begin(*client, weatherURL);
-  int httpCode = http.GET();
-  if (httpCode > 0) {
-    if (httpCode == HTTP_CODE_OK) {
-      Serial.print("Got payload response of length: ");
-      Serial.println(http.getSize());
-      Serial.println("Parsing JSON...");
+  ArudinoStreamParser parser;
+  WeatherAPIHandler custom_handler;
+  parser.setHandler(&custom_handler);
+  
+  for (int attempt = 0; attempt < 2; attempt++) {
+      HTTPClient http;
+      http.begin(*client, weatherURL);
+      int httpCode = http.GET();
       
-      // Stream the HTTP response directly into the parser.
-      http.writeToStream(&parser);
-    }
-    else {
-      Serial.printf("Unexpected HTTP code: %d\n", httpCode);
+      if (httpCode == HTTP_CODE_OK) {
+          http.writeToStream(&parser);
+          http.end();
+          return;  // Success, exit function
+      }
+      
       http.end();
-      return;
-    }
+      if (attempt == 0) {
+          delay(1000);  // Wait before retry
+      }
   }
-  else {
-    Serial.printf("HTTP GET failed, error: %s\n", http.errorToString(httpCode).c_str());
-    http.end();
-    return;
-  }
-  http.end();
+  // If we get here, both attempts failed
 }
 
 void drawWeatherForecast() {
@@ -1002,17 +993,16 @@ void drawHourlyChart() {
 
 // Draw calendar events with black bullet points
 void fetchEvents() {
-  //display.println(ESP.getFreeHeap());
   String payload = httpGETRequest(calendarURL);
-  Serial.print("Calendar payload size: ");
-  Serial.println(payload.length());
-  Serial.println("Calendar payload start (first 200 chars):");
-  Serial.println(payload.substring(0, 200));
-
+  if (payload == "{}") {  // First attempt failed
+      delay(1000);  // Wait a second
+      payload = httpGETRequest(calendarURL);  // Try again
+  }
+  
   events = JSON.parse(payload);
   if (JSON.typeof(events) == "undefined") {
-    display.println("Calendar JSON parse failed");
-    return;
+      display.println("Calendar JSON parse failed");
+      return;
   }
 }
 
@@ -1462,6 +1452,7 @@ void updateMenu() {
           if(selection == 4) {  // Changed from 4 to 3 since array is 0-based
               startWebserver();
           } else {
+              display.clearScreen();
               page = selection + 1;  // Add 1 to convert from 0-based to 1-based
               switch (page) {
                 case 1:
