@@ -64,6 +64,8 @@ JSONVar events;
     static uint32_t __every__##interval = millis(); \
     if (millis() - __every__##interval >= interval && (__every__##interval = millis()))
 
+bool buttonstart = false;
+
 typedef struct {
     float min_value;
     int hour;
@@ -81,6 +83,7 @@ typedef struct {
     float in_hum;
     float pressure;
     int winddir;
+    float vBat;
 } sensorReadings;
 
 // Add RTC_DATA_ATTR to preserve across deep sleep
@@ -189,6 +192,13 @@ BLYNK_WRITE(V95) {
   voc_index = param.asFloat();
 }
 
+BLYNK_WRITE(V120)
+{
+  if (param.asInt() == 1) {buttonstart = true;}
+  if (param.asInt() == 0) {buttonstart = false;}
+}
+
+
 void clearReadings() {
     memset(Readings, 0, sizeof(Readings));
     numReadings = 0;
@@ -292,6 +302,8 @@ void gotosleep() {
   delay(1000);
 }
 
+
+
 BLYNK_CONNECTED() {
     Blynk.syncVirtual(V41);  // neotemp
     Blynk.syncVirtual(V42);  // jojutemp
@@ -308,6 +320,7 @@ BLYNK_CONNECTED() {
     Blynk.syncVirtual(V93);  // co2SCD
     Blynk.syncVirtual(V94);  // presBME
     Blynk.syncVirtual(V95);  // voc_index
+    Blynk.syncVirtual(V120); //flash button
 }
 
 #include "esp_sntp.h"
@@ -511,7 +524,22 @@ void startWifi() {
   Blynk.run();
   Blynk.virtualWrite(V115, vBat);
   Blynk.run();
-  Blynk.virtualWrite(V115, vBat);
+  if (numReadings > 1) {
+    float firstBat = Readings[0].vBat;
+    float lastBat = Readings[numReadings-1].vBat;
+    float voltDiff = firstBat - lastBat;
+    
+    // Calculate hours of data we have (5 min per reading)
+    float hours = (numReadings * 5.0) / 60.0;
+    
+    // Extrapolate to 24 hour rate (V/day)
+    float dailyDrain = (voltDiff / hours) * 24.0;
+    Blynk.virtualWrite(V116, dailyDrain);  
+    Blynk.run();
+}
+  Blynk.virtualWrite(V117, WiFi.RSSI());
+  Blynk.run();
+  Blynk.virtualWrite(V117, WiFi.RSSI());
   Blynk.run();
 
   struct tm timeinfo;
@@ -520,6 +548,8 @@ void startWifi() {
   localtime_r(&now, &timeinfo);
 
   char timeString[10];
+  
+
 }
 
 void startWebserver() {
@@ -548,12 +578,24 @@ void startWebserver() {
     display.println("Connected! to: ");
     display.println(WiFi.localIP());
   } while (display.nextPage());
+  
+  Blynk.config(auth, IPAddress(192, 168, 50, 197), 8080);
+  Blynk.connect();
+  while ((!Blynk.connected()) && (millis() < 20000)) {
+    delay(500);
+  }
   ArduinoOTA.setHostname("Nigel");
   ArduinoOTA.begin();
   display.println("ArduinoOTA started");
   display.print("RSSI: ");
   display.println(WiFi.RSSI());
   display.display(true);
+  terminal.println("Nigel ArduinoOTA started");
+  terminal.println(WiFi.localIP());
+  terminal.print("RSSI: ");
+  terminal.println(WiFi.RSSI());
+  terminal.flush();
+  Blynk.run();
   delay(500);
 }
 
@@ -1102,9 +1144,11 @@ void doMainDisplay() {
   display.drawLine(DISP_WIDTH - 2 - xOffset, DISP_HEIGHT - 10 - 2 + 1 - yOffset, DISP_WIDTH - 2 - xOffset, DISP_HEIGHT - 2 - 2 - yOffset, GxEPD_BLACK);
   display.drawLine(DISP_WIDTH - 1 - xOffset, DISP_HEIGHT - 10 - 2 + 1 - yOffset, DISP_WIDTH - 1 - xOffset, DISP_HEIGHT - 2 - 2 - yOffset, GxEPD_BLACK);
   display.displayWindow(0, lineheight,  display.width(),  display.height() - lineheight);
-  //terminal.flush();
+  //
   Blynk.run();
   delay(50);
+    if (buttonstart) {startWebserver(); return;}
+  
   gotosleep();
 }
 
@@ -1276,6 +1320,7 @@ void takeSamples() {
       Readings[numReadings].in_temp = t;
       Readings[numReadings].in_hum = h;
       Readings[numReadings].pressure = pres;
+      Readings[numReadings].vBat = vBat;
       if (numReadings < maxArray - 1) {
           numReadings++;
       }
@@ -1361,22 +1406,26 @@ void setup() {
             }
             else {drawTopSensorRow();}
             minutecount++;
+            gotosleep();
             break;
         case 2:
             drawChartA();
             display.display(true);
+            gotosleep();
             break;
         case 3:
             drawChartB();
             display.display(true);
+            gotosleep();
             break;
         case 4:
             displayIcons();
             display.display(true);
+            gotosleep();
             break;
     }
   }
-  gotosleep();
+  
 }
 
 
