@@ -1,4 +1,5 @@
 #include <GxEPD2_BW.h>
+#include <Adafruit_GFX.h>
 #include <Adafruit_AHTX0.h>
 #include <Adafruit_BMP280.h>
 #include <WiFi.h>
@@ -26,11 +27,12 @@ WidgetTerminal terminal(V10);
 #include "driver/periph_ctrl.h"
 int GPIO_reason;
 #include "esp_sleep.h"
-
+//#include <GxEPD2_4G_4G.h>
+//#include <GxEPD2_4G_BW.h>
 // Include fonts and define them
 //#include <Fonts/Roboto_Condensed_12.h>
 //#include <Fonts/Open_Sans_Condensed_Bold_48.h>
-
+#define GxEPD2_DRIVER_CLASS GxEPD2_420_GDEY042T81 // GDEY042T81 400x300, SSD1683 (no inking)
 #define FONT1 &FreeSans9pt7b
 #define FONT2 &FreeSansBold12pt7b
 #define FONT3 &FreeSans12pt7b
@@ -38,8 +40,9 @@ int GPIO_reason;
 #define BLACK GxEPD_BLACK
 
 // ---- NEW DISPLAY INITIALIZER FOR 400x300 ----
-GxEPD2_BW<GxEPD2_420_GDEY042T81, GxEPD2_420_GDEY042T81::HEIGHT> display(
-  GxEPD2_420_GDEY042T81(SS, /* DC=*/21, /* RES=*/20, /* BUSY=*/10));
+GxEPD2_BW<GxEPD2_420_GDEY042T81, GxEPD2_420_GDEY042T81::HEIGHT> display(GxEPD2_420_GDEY042T81(SS, /* DC=*/21, /* RES=*/20, /* BUSY=*/10));
+//GxEPD2_4G_4G<GxEPD2_420_GDEY042T81, GxEPD2_420_GDEY042T81::HEIGHT> display(GxEPD2_420_GDEY042T81(SS, /* DC=*/21, /* RES=*/20, /* BUSY=*/10));
+
 
 // Define display dimensions for scaling (originally 200x200, now 400x300)
 #define DISP_WIDTH 300
@@ -524,19 +527,19 @@ void startWifi() {
   Blynk.run();
   Blynk.virtualWrite(V115, vBat);
   Blynk.run();
-  if (numReadings > 1) {
-    float firstBat = Readings[0].vBat;
+  if (numReadings > 2) {  // Need at least 3 readings
+    int startIdx = 2;  // Skip first two readings
+    float firstBat = Readings[startIdx].vBat;
     float lastBat = Readings[numReadings-1].vBat;
-    float voltDiff = firstBat - lastBat;
+    float voltDiff = lastBat - firstBat;
     
-    // Calculate hours of data we have (5 min per reading)
-    float hours = (numReadings * 5.0) / 60.0;
+    // Calculate hours between these points (5 min per reading)
+    float hours = ((numReadings - startIdx) * 5.0) / 60.0;  // Only count hours after startIdx
     
-    // Extrapolate to 24 hour rate (V/day)
-    float dailyDrain = (voltDiff / hours) * 24.0;
-    Blynk.virtualWrite(V116, dailyDrain);  
+    float dailyDrain = (-voltDiff / hours) * 24.0;
+    Blynk.virtualWrite(V116, dailyDrain);
     Blynk.run();
-}
+  }
   Blynk.virtualWrite(V117, WiFi.RSSI());
   Blynk.run();
   Blynk.virtualWrite(V117, WiFi.RSSI());
@@ -548,7 +551,7 @@ void startWifi() {
   localtime_r(&now, &timeinfo);
 
   char timeString[10];
-  
+      if (buttonstart) {startWebserver(); return;}
 
 }
 
@@ -815,6 +818,7 @@ void drawWeatherForecast() {
     
     // Draw the title centered in the cell.
     display.setFont(&FreeSans9pt7b);
+    //display.setTextColor(GxEPD_DARKGREY);
     int16_t dX, dY;
     uint16_t textW, textH;
     display.getTextBounds(title.c_str(), 0, 0, &dX, &dY, &textW, &textH);
@@ -1050,16 +1054,20 @@ void fetchEvents() {
 
 void displayEvents() {
   String lastDate = "";
-  int printedEvents = 0;
-  int y = 212;
+  int y = 212;  // Starting y position
   int eventCount = events.length();
+  const int batteryY = DISP_HEIGHT - 15;  // Leave room for battery icon
 
-  for (int i = 0; i < eventCount && printedEvents < 3; i++) {
+  for (int i = 0; i < eventCount; i++) {
+      // Check if next event would go past battery area
+      if (y >= batteryY) {
+          break;
+      }
+
       JSONVar event = events[i];
       String title = String((const char*)event["title"]);
       String startTimeUTC = String((const char*)event["startTime"]);
       
-      // Convert UTC time to local time
       String localTime = convertUTCtoEST(startTimeUTC.c_str());
       
       int year, month, day, hour, minute;
@@ -1073,18 +1081,18 @@ void displayEvents() {
           t.tm_sec = 0;
           t.tm_isdst = -1;
           
-          // Convert UTC to local time
           time_t utc = mktime(&t);
-          utc += gmtOffset_sec + daylightOffset_sec;  // Add timezone offset
-          localtime_r(&utc, &t);  // Convert to local time
+          utc += gmtOffset_sec + daylightOffset_sec;
+          localtime_r(&utc, &t);
 
-          // Format date header
           char dateBuffer[40];
           strftime(dateBuffer, sizeof(dateBuffer), "%A, %B %d", &t);
           String fullDateStr = dateBuffer;
 
-          // Print new date header if different
+          // Check if next date header would go past battery
           if (lastDate != fullDateStr) {
+              if (y + 28 >= batteryY) break;  // Date header + spacing needs ~28px
+              
               y += 8;
               lastDate = fullDateStr;
               display.setFont(FONT2);
@@ -1093,16 +1101,27 @@ void displayEvents() {
               y += 20;
           }
 
-          // Build event text with converted local time
           String eventText = localTime + " - " + title;
-
-          // Word wrap and display
-          const int maxWidth = 290;
+          const int maxWidth = 280;
           char wrappedText[512];
+          
+          // Pre-calculate wrapped text height
+          display.setFont(&FreeSans9pt7b);
+          wrapWords(eventText.c_str(), maxWidth, wrappedText, sizeof(wrappedText));
+          int lineCount = 0;
+          char *testLine = strtok(wrappedText, "\n");
+          while (testLine != NULL) {
+              lineCount++;
+              testLine = strtok(NULL, "\n");
+          }
+          
+          // Check if entire event would fit
+          int eventHeight = lineCount * 19;  // 19px per line
+          if (y + eventHeight >= batteryY) break;
+
+          // Actually draw the event
           display.setCursor(10 + 8, y);
           wrapWords(eventText.c_str(), maxWidth, wrappedText, sizeof(wrappedText));
-          display.setFont(&FreeSans9pt7b);
-
           char *line = strtok(wrappedText, "\n");
           while (line != NULL) {
               if (line == wrappedText) {
@@ -1113,11 +1132,9 @@ void displayEvents() {
               y += 19;
               line = strtok(NULL, "\n");
           }
-          printedEvents++;
       }
   }
 }
-
 
 
 void doMainDisplay() {
@@ -1147,7 +1164,7 @@ void doMainDisplay() {
   //
   Blynk.run();
   delay(50);
-    if (buttonstart) {startWebserver(); return;}
+
   
   gotosleep();
 }
@@ -1300,10 +1317,12 @@ void takeSamples() {
       struct tm timeinfo;
       localtime_r(&now, &timeinfo);
       
-      // Clear readings at start of new day
-      if (timeinfo.tm_hour == 0) {
-          clearReadings();
-      }
+      if (numReadings >= maxArray) {
+        for (int i = 0; i < maxArray - 1; i++) {
+            Readings[i] = Readings[i + 1];
+        }
+        numReadings = maxArray - 1; // Keep last slot open for new reading
+    }
       
       // Record new reading
       Readings[numReadings].hour = timeinfo.tm_hour;
@@ -1395,14 +1414,16 @@ void setup() {
     gotosleep();
   } else {    // When waking from timer or first boot
       startWifi();
+      if (!buttonstart) {
       takeSamples();
       
       switch (page) {
         case 1:
             
             if (minutecount >= 12) {
+              minutecount = 0;
                 doMainDisplay();
-                minutecount = 0;
+                
             }
             else {drawTopSensorRow();}
             minutecount++;
@@ -1423,9 +1444,9 @@ void setup() {
             display.display(true);
             gotosleep();
             break;
+      }
     }
   }
-  
 }
 
 
