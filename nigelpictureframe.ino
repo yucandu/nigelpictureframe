@@ -481,6 +481,19 @@ void drawBusy() {
   display.displayWindow(x-1, y-1, 9, 11);
 }
 
+void eraseBusy() {
+  // Position just left of battery icon
+  display.fillScreen(GxEPD_WHITE);
+  int xOffset = 5;
+  int yOffset = 3;
+  int x = DISP_WIDTH - 38 - 2 - xOffset - 15; // 15 pixels left of battery
+  int y = DISP_HEIGHT - 10 - yOffset;
+  
+  // Update only the hourglass area
+  display.displayWindow(x-1, y-1, 9, 11);
+}
+
+
 void startWifi() {
   drawBusy();
   //display.setTextSize(2);
@@ -536,7 +549,7 @@ void startWifi() {
     // Calculate hours between these points (5 min per reading)
     float hours = ((numReadings - startIdx) * 5.0) / 60.0;  // Only count hours after startIdx
     
-    float dailyDrain = (-voltDiff / hours) * 24.0;
+    float dailyDrain = (voltDiff / hours) * 24.0;
     Blynk.virtualWrite(V116, dailyDrain);
     Blynk.run();
   }
@@ -549,10 +562,10 @@ void startWifi() {
   getLocalTime(&timeinfo);
   time_t now = time(NULL);
   localtime_r(&now, &timeinfo);
-
+  eraseBusy();
   char timeString[10];
       if (buttonstart) {startWebserver(); return;}
-
+  
 }
 
 void startWebserver() {
@@ -963,6 +976,14 @@ void drawHourlyChart() {
          globalMax = globalMin + 1;
     }
 
+    if (globalMin < 0 && globalMax > 0) {
+      int y0 = chartYBottom - (int)((0 - globalMin) / (globalMax - globalMin) * chartHeight);
+      // Draw dashed line across all 3 cells
+      for (int x = 0; x < 300; x += 6) {  // Draw 3px dash, 3px space
+          display.drawLine(x, y0, x + 3, y0, BLACK);
+      }
+    }
+
     // Draw y-axis labels
     display.setFont();
     char label[10];
@@ -974,6 +995,14 @@ void drawHourlyChart() {
     display.setCursor(0, chartYBottom + 2);
     display.print(label);
     //display.print(char(247));
+    // Draw y-axis ticks for each degree
+    int minDeg = ceil(globalMin);
+    int maxDeg = floor(globalMax);
+    for(int deg = minDeg; deg <= maxDeg; deg++) {
+        int y = chartYBottom - (int)(((deg - globalMin) / (globalMax - globalMin)) * chartHeight);
+        // Draw short tick marks on y-axis
+        display.drawLine(0, y, 3, y, BLACK);
+    }
     // Draw forecast days
     for (int d = 0; d < 3; d++) {
          int xOffset = d * cellWidth;
@@ -1138,9 +1167,10 @@ void displayEvents() {
 
 
 void doMainDisplay() {
+  drawBusy();
   getWeatherForecast();
   fetchEvents();
-
+  eraseBusy();
 
   //wipeScreen();
   int barx = mapf(vBat, 3.3, 4.15, 0, 38);
