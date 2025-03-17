@@ -11,6 +11,7 @@
 #include <WiFiClientSecure.h>
 #include <BlynkSimpleEsp32.h>
 #include <Fonts/FreeSansBold12pt7b.h>
+#include <Fonts/FreeSansBold18pt7b.h>
 #include <Fonts/FreeSans12pt7b.h>
 #include <Fonts/FreeSans9pt7b.h>
 #include <time.h>
@@ -36,6 +37,7 @@ int GPIO_reason;
 #define FONT1 &FreeSans9pt7b
 #define FONT2 &FreeSansBold12pt7b
 #define FONT3 &FreeSans12pt7b
+#define FONT4 &FreeSansBold18pt7b
 #define WHITE GxEPD_WHITE
 #define BLACK GxEPD_BLACK
 
@@ -61,7 +63,7 @@ JSONVar events;
 #define ENABLE_GxEPD2_GFX 1
 #define TIME_TIMEOUT 20000
 #define sleeptimeSecs 300
-#define maxArray 120
+#define maxArray 108
 
 #define every(interval) \
     static uint32_t __every__##interval = millis(); \
@@ -102,7 +104,7 @@ float v41_value, v42_value, v62_value;
 RTC_DATA_ATTR bool firstrun = true;
 RTC_DATA_ATTR int runcount = 1000;
 RTC_DATA_ATTR int minutecount = 12;
-RTC_DATA_ATTR int page = 1;
+RTC_DATA_ATTR int page = 2;
 float abshum;
 float minVal = 3.9;
 float maxVal = 4.2;
@@ -343,34 +345,59 @@ void initTime(String timezone) {
 
 
 
-void drawSingleChart(int x, int y, float data[], int count, const char* title, bool rightAlign = false) {
+void drawSingleChart(int x, int y, float data[], int count, const char* title, const char* units, bool rightAlign = false) {
   const int chartWidth = 110;    
   const int chartHeight = 100;   
   const int xOffset = 28;  // Changed from 35 to 28
   
   // Find min/max and count data points
   float min = 1e6, max = -1e6;
+  float lastValue = 0;
   int dataPoints = 0;
   for(int i = 0; i < count; i++) {
       if(data[i] == 0) continue;
       if(data[i] < min) min = data[i];
       if(data[i] > max) max = data[i];
+      lastValue = data[i];  // Will end up with last non-zero value
       dataPoints++;
   }
   if(max - min < 0.001) max = min + 0.001;
   
   // Draw title and y-axis labels
-  display.setFont(&FreeSans9pt7b);
+  display.setFont(FONT2);
   display.setCursor(x + (rightAlign ? 75 : 5), y + 15);
   display.print(title);
+
+  // Add latest value after title
+  char valueStr[10];
+  if (lastValue >= 100) {
+    snprintf(valueStr, sizeof(valueStr), " %.0f", lastValue);
+  } else {
+    snprintf(valueStr, sizeof(valueStr), " %.1f", lastValue);
+  }
+  display.print(valueStr);
+  
+  // Add units in smaller font
+  display.setFont(FONT1);
+  display.print(" ");
+  display.print(units);
   
   display.setFont();
   char label[10];
-  snprintf(label, sizeof(label), "%.1f", max);
+  if (max >= 100) {
+    snprintf(label, sizeof(label), "%.0f", max);
+  } else {
+    snprintf(label, sizeof(label), "%.1f", max);
+  }
   display.setCursor(x + 2, y + 25);
   display.print(label);
-  snprintf(label, sizeof(label), "%.1f", min);
-  display.setCursor(x + 2, y + 25 + chartHeight - 7);  // Moved up 7 pixels
+
+  if (min >= 100) {
+    snprintf(label, sizeof(label), "%.0f", min);
+  } else {
+    snprintf(label, sizeof(label), "%.1f", min);
+  }
+  display.setCursor(x + 2, y + 25 + chartHeight - 7);
   display.print(label);
   
   // Draw chart border first
@@ -393,46 +420,85 @@ void drawSingleChart(int x, int y, float data[], int count, const char* title, b
       }
   }
   
-  // Draw data points
+  // Draw data points and fill area
   int prevX = 0, prevY = 0;
   bool first = true;
+  
+  // Start fill path at bottom-left
+  int startX = x + xOffset;
+  int startY = y + 25 + chartHeight;
+  
   for(int i = 0; i < count; i++) {
       if(data[i] == 0) continue;
       int plotX = x + xOffset + (i * chartWidth / count);
       int plotY = y + 25 + ((max - data[i]) * chartHeight / (max - min));
       
       if(!first) {
+          // Draw the line segment
           display.drawLine(prevX, prevY, plotX, plotY, BLACK);
+          
+          // Fill the trapezoid formed by this line segment and the bottom of the chart
+          display.fillTriangle(
+              prevX, prevY,           // Previous point
+              plotX, plotY,           // Current point
+              plotX, startY,          // Bottom right
+              BLACK
+          );
+          display.fillTriangle(
+              prevX, prevY,           // Previous point
+              prevX, startY,          // Bottom left
+              plotX, startY,          // Bottom right
+              BLACK
+          );
+      } else {
+          // Fill the first triangle from chart bottom to first point
+          display.fillTriangle(
+              startX, startY,         // Bottom left of chart
+              plotX, plotY,           // First data point
+              plotX, startY,          // Bottom right
+              BLACK
+          );
       }
+      
       prevX = plotX;
       prevY = plotY;
       first = false;
   }
+  
+  // Fill the last triangle to the right edge of chart if needed
+  if (!first) {
+      display.fillTriangle(
+          prevX, prevY,               // Last point
+          x + xOffset + chartWidth, startY,  // Bottom right of chart
+          prevX, startY,              // Bottom of last point
+          BLACK
+      );
+  }
 }
+
 void drawChartA() {
   float data[maxArray];
   display.fillScreen(GxEPD_WHITE);
   
-  // Extract data arrays and draw charts - uses entire 300x400 display
   // Left column (150px wide, ~133px height each)
   for(int i = 0; i < numReadings; i++) data[i] = Readings[i].min_value;
-  drawSingleChart(0, 0, data, numReadings, "Out Temp");
+  drawSingleChart(3, 7, data, numReadings, "Out", "°C");
   
   for(int i = 0; i < numReadings; i++) data[i] = Readings[i].windspeed;
-  drawSingleChart(0, 133, data, numReadings, "Wind");
+  drawSingleChart(3, 140, data, numReadings, "Wind", "k");
   
   for(int i = 0; i < numReadings; i++) data[i] = Readings[i].pm25out;
-  drawSingleChart(0, 266, data, numReadings, "PM2.5 Out");
+  drawSingleChart(3, 273, data, numReadings, "PM2.5", "ug");
   
   // Right column
   for(int i = 0; i < numReadings; i++) data[i] = Readings[i].temppool;
-  drawSingleChart(150, 0, data, numReadings, "Pool Temp", false);
+  drawSingleChart(153, 7, data, numReadings, "Pool", "°C", false);
   
   for(int i = 0; i < numReadings; i++) data[i] = Readings[i].pressure;
-  drawSingleChart(150, 133, data, numReadings, "Pressure", false);
+  drawSingleChart(153, 140, data, numReadings, "Pres", "mb", false);
   
   for(int i = 0; i < numReadings; i++) data[i] = Readings[i].bridgehum;
-  drawSingleChart(150, 266, data, numReadings, "Dewpoint", false);
+  drawSingleChart(153, 273, data, numReadings, "Dewp", "%", false);
 }
 
 void drawChartB() {
@@ -441,23 +507,23 @@ void drawChartB() {
   
   // Left column
   for(int i = 0; i < numReadings; i++) data[i] = Readings[i].in_temp;
-  drawSingleChart(0, 0, data, numReadings, "In Temp");
+  drawSingleChart(3, 7, data, numReadings, "In", "°C");
   
   for(int i = 0; i < numReadings; i++) data[i] = Readings[i].in_hum;
-  drawSingleChart(0, 133, data, numReadings, "In Hum");
+  drawSingleChart(3, 140, data, numReadings, "Hum", "%");
   
   for(int i = 0; i < numReadings; i++) data[i] = Readings[i].co2SCD;
-  drawSingleChart(0, 266, data, numReadings, "CO2");
+  drawSingleChart(3, 273, data, numReadings, "CO2", "p");
   
   // Right column
   for(int i = 0; i < numReadings; i++) data[i] = Readings[i].voc_index;
-  drawSingleChart(150, 0, data, numReadings, "VOC", false);
+  drawSingleChart(153, 7, data, numReadings, "VOC", "", false);
   
   for(int i = 0; i < numReadings; i++) data[i] = Readings[i].kw;
-  drawSingleChart(150, 133, data, numReadings, "Power", false);
+  drawSingleChart(153, 140, data, numReadings, "Pow", "kW", false);
   
   for(int i = 0; i < numReadings; i++) data[i] = Readings[i].pm25in;
-  drawSingleChart(150, 266, data, numReadings, "PM2.5 In", false);
+  drawSingleChart(153, 273, data, numReadings, "PM2.5", "ug", false);
 }
 
 
@@ -1028,33 +1094,35 @@ void drawHourlyChart() {
          }
          
          // Draw recorded temperature circles for day 0
-         if (d == 0 && numReadings > 0) {
-          struct tm timeinfo;
-          time_t now = time(nullptr);
-          localtime_r(&now, &timeinfo);
-          int currentDay = timeinfo.tm_mday;
-          
-          for (int h = 0; h < 24; h++) {  // Loop through each hour
-              float sum = 0;
-              int count = 0;
-              
-              // Find all readings for this hour
-              for (int i = 0; i < numReadings; i++) {
-                  if (Readings[i].hour == h) {
-                      sum += Readings[i].min_value;
-                      count++;
-                  }
-              }
-              
-              // If we have readings for this hour, draw the average
-              if (count > 0) {
-                  float avgTemp = sum / count;
-                  int y = chartYBottom - (int)(((avgTemp - globalMin) / (globalMax - globalMin)) * chartHeight);
-                  int x = xOffset + (int)((float)h / 23.0 * (cellWidth - 1));
-                  display.drawCircle(x, y, 1, BLACK);
-              }
+          // Draw recorded temperature circles for day 0
+          if (d == 0 && numReadings > 0) {
+            struct tm timeinfo;
+            time_t now = time(nullptr);
+            localtime_r(&now, &timeinfo);
+            int currentHour = timeinfo.tm_hour;
+            
+            // Only loop through hours from midnight to current hour
+            for (int h = 0; h <= currentHour; h++) {
+                float sum = 0;
+                int count = 0;
+                
+                // Find all readings for this hour
+                for (int i = 0; i < numReadings; i++) {
+                    if (Readings[i].hour == h) {
+                        sum += Readings[i].min_value;
+                        count++;
+                    }
+                }
+                
+                // If we have readings for this hour, draw the average
+                if (count > 0) {
+                    float avgTemp = sum / count;
+                    int y = chartYBottom - (int)(((avgTemp - globalMin) / (globalMax - globalMin)) * chartHeight);
+                    int x = xOffset + (int)((float)h / 23.0 * (cellWidth - 1));
+                    display.drawCircle(x, y, 1, BLACK);
+                }
+            }
           }
-      }
          
          // Draw cell border
          display.drawRect(xOffset, chartYTop, cellWidth, chartHeight, BLACK);
@@ -1264,117 +1332,151 @@ void displayIcons() {
   display.fillScreen(WHITE);
   display.drawInvertedBitmap(0, 0, iconsUI, 300, 400, BLACK);
   
-  // Set small font
-  display.setFont(&FreeSans9pt7b);
-  
-  // Column positions
-  const int col1 = 75;  // After icons
-  const int col2 = 210; // Middle of display
-  const int rowHeight = 55; // Reduced from 55 to move everything up
-  const int startY = -15;  // Start higher up
+  const int col1 = 65;  // After icons
+  const int col2 = 200; // Middle of display
+  const int rowHeight = 53; 
+  const int startY = -5;  
   char buffer[32];
+  char units[32];
   
   // Row 1: Temperatures
+  display.setFont(FONT4);
   display.setCursor(col1, startY + rowHeight);
-  snprintf(buffer, sizeof(buffer), "%.1f°C", t);
+  snprintf(buffer, sizeof(buffer), "%.1f", t);
   display.print(buffer);
+  display.setFont(FONT1);
+  display.print("°C");
+  
+  display.setFont(FONT4);
   display.setCursor(col2, startY + rowHeight);
-  snprintf(buffer, sizeof(buffer), "%.1f°C", min_value);
+  snprintf(buffer, sizeof(buffer), "%.1f", min_value);
   display.print(buffer);
+  display.setFont(FONT1);
+  display.print("°C");
   
   // Row 2: Humidity
+  display.setFont(FONT4);
   display.setCursor(col1, startY + rowHeight * 2);
-  snprintf(buffer, sizeof(buffer), "%.0f%%", h);
+  snprintf(buffer, sizeof(buffer), "%.0f", h);
   display.print(buffer);
+  display.setFont(FONT1);
+  display.print("%");
+  
+  display.setFont(FONT4);
   display.setCursor(col2, startY + rowHeight * 2);
-  snprintf(buffer, sizeof(buffer), "%.1f%°", bridgehum);
+  snprintf(buffer, sizeof(buffer), "%.1f", bridgehum);
   display.print(buffer);
+  display.setFont(FONT1);
+  //display.print("%");
   
   // Row 3: Wind
+  display.setFont(FONT4);
   display.setCursor(col1, startY + rowHeight * 3);
-  snprintf(buffer, sizeof(buffer), "%.0f kph", windspeed);
+  snprintf(buffer, sizeof(buffer), "%.0f", windspeed);
   display.print(buffer);
+  display.setFont(FONT1);
+  display.print(" kph");
+  
+  display.setFont(FONT4);
   display.setCursor(col2, startY + rowHeight * 3);
-  //snprintf(buffer, sizeof(buffer), "%d°", winddir);
   display.print(windDirection(winddir));
   
   // Row 4: PM2.5
+  display.setFont(FONT4);
   display.setCursor(col1, startY + rowHeight * 4);
-  snprintf(buffer, sizeof(buffer), "%.0fg", pm25in);
+  snprintf(buffer, sizeof(buffer), "%.0f", pm25in);
   display.print(buffer);
+  display.setFont(FONT1);
+  display.print(" g");
+  
+  display.setFont(FONT4);
   display.setCursor(col2, startY + rowHeight * 4);
-  snprintf(buffer, sizeof(buffer), "%.0fg", pm25out);
+  snprintf(buffer, sizeof(buffer), "%.0f", pm25out);
   display.print(buffer);
+  display.setFont(FONT1);
+  display.print(" g");
   
   // Row 5: CO2
+  display.setFont(FONT4);
   display.setCursor(col1, startY + rowHeight * 5);
-  snprintf(buffer, sizeof(buffer), "%.0f ppm", co2SCD);
+  snprintf(buffer, sizeof(buffer), "%.0f", co2SCD);
   display.print(buffer);
+  display.setFont(FONT1);
+  display.print(" p");
+  
+  display.setFont(FONT4);
   display.setCursor(col2, startY + rowHeight * 5);
-  snprintf(buffer, sizeof(buffer), "%.0f ppm", bridgeco2);
+  snprintf(buffer, sizeof(buffer), "%.0f", bridgeco2);
   display.print(buffer);
+  display.setFont(FONT1);
+  display.print(" p");
   
   // Row 6: Pressure & Power
+  display.setFont(FONT4);
   display.setCursor(col1, startY + rowHeight * 6);
-  snprintf(buffer, sizeof(buffer), "%.0f kPa", pres);
+  snprintf(buffer, sizeof(buffer), "%.0f", pres);
   display.print(buffer);
+  display.setFont(FONT1);
+  display.print(" mb");
+  
+  display.setFont(FONT4);
   display.setCursor(col2, startY + rowHeight * 6);
-  snprintf(buffer, sizeof(buffer), "%.1f kW", kw);
+  snprintf(buffer, sizeof(buffer), "%.1f", kw);
   display.print(buffer);
+  display.setFont(FONT1);
+  display.print(" kW");
   
   // Row 7: Pool & VOC
+  display.setFont(FONT4);
   display.setCursor(col1, startY + rowHeight * 7);
-  snprintf(buffer, sizeof(buffer), "%.1f°C", temppool);
+  snprintf(buffer, sizeof(buffer), "%.1f", temppool);
   display.print(buffer);
+  display.setFont(FONT1);
+  display.print("°C");
+  
+  display.setFont(FONT4);
   display.setCursor(col2, startY + rowHeight * 7);
   snprintf(buffer, sizeof(buffer), "%.0f", voc_index);
   display.print(buffer);
-
-  // For drawSingleChart modifications, change:
-  // In drawChartA() and drawChartB(), change:
-  // drawSingleChart(125, ... // for right column charts
-  // and in drawSingleChart():
-  // display.setCursor(x + (rightAlign ? 2 : 2), y + 25); // for y-axis labels
-  // This puts all y-axis labels on the left side
 }
 
 void takeSamples() {
-  if (WiFi.status() == WL_CONNECTED) {
+  if (!WiFi.status() == WL_CONNECTED) return;
+  
+  min_value = findLowestNonZero(neotemp, jojutemp, bridgetemp);
+  if (min_value == 999) return;
 
-     min_value = findLowestNonZero(neotemp, jojutemp, bridgetemp);
-    if (min_value != 999) {
-      time_t now = time(nullptr);
-      struct tm timeinfo;
-      localtime_r(&now, &timeinfo);
-      
-      if (numReadings >= maxArray) {
-        for (int i = 0; i < maxArray - 1; i++) {
-            Readings[i] = Readings[i + 1];
-        }
-        numReadings = maxArray - 1; // Keep last slot open for new reading
-    }
-      
-      // Record new reading
-      Readings[numReadings].hour = timeinfo.tm_hour;
-      Readings[numReadings].min_value = min_value;
-      Readings[numReadings].temppool = temppool;
-      Readings[numReadings].bridgehum = bridgehum;
-      Readings[numReadings].pm25out = pm25out;
-      Readings[numReadings].pm25in = pm25in;
-      Readings[numReadings].bridgeco2 = bridgeco2;
-      Readings[numReadings].windspeed = windspeed;
-      Readings[numReadings].kw = kw;
-      Readings[numReadings].co2SCD = co2SCD;
-      Readings[numReadings].voc_index = voc_index;
-      Readings[numReadings].in_temp = t;
-      Readings[numReadings].in_hum = h;
-      Readings[numReadings].pressure = pres;
-      Readings[numReadings].vBat = vBat;
-      if (numReadings < maxArray - 1) {
-          numReadings++;
+  time_t now = time(nullptr);
+  struct tm timeinfo;
+  localtime_r(&now, &timeinfo);
+  
+  // If array is full, shift everything left by one position
+  if (numReadings >= maxArray) {
+      for (int i = 0; i < maxArray - 1; i++) {
+          Readings[i] = Readings[i + 1];
       }
-    }
+      numReadings = maxArray - 1;  // Make room for new reading at the end
   }
+  
+  // Add new reading at the end
+  int idx = numReadings;
+  Readings[idx].hour = timeinfo.tm_hour;
+  Readings[idx].min_value = min_value;
+  Readings[idx].temppool = temppool;
+  Readings[idx].bridgehum = bridgehum;
+  Readings[idx].pm25out = pm25out;
+  Readings[idx].pm25in = pm25in;
+  Readings[idx].bridgeco2 = bridgeco2;
+  Readings[idx].windspeed = windspeed;
+  Readings[idx].kw = kw;
+  Readings[idx].co2SCD = co2SCD;
+  Readings[idx].voc_index = voc_index;
+  Readings[idx].in_temp = t;
+  Readings[idx].in_hum = h;
+  Readings[idx].pressure = pres;
+  Readings[idx].vBat = vBat;
+  
+  numReadings++;  // Always increment after adding new reading
 }
 
 
