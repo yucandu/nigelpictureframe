@@ -363,23 +363,49 @@ void drawSingleChart(int x, int y, float data[], int count, const char* title, c
   }
   if(max - min < 0.001) max = min + 0.001;
   
-  // Draw title and y-axis labels
+  // Draw title
   display.setFont(FONT2);
-  display.setCursor(x + (rightAlign ? 75 : 5), y + 15);
-  display.print(title);
-
-  // Add latest value after title
+  int16_t tx, ty;
+  uint16_t tw, th;
+  
+  // Get title bounds
+  display.getTextBounds(title, 0, 0, &tx, &ty, &tw, &th);
+  
+  // Format value string
   char valueStr[10];
   if (lastValue >= 100) {
-    snprintf(valueStr, sizeof(valueStr), " %.0f", lastValue);
+    snprintf(valueStr, sizeof(valueStr), "%.0f", lastValue);
   } else {
-    snprintf(valueStr, sizeof(valueStr), " %.1f", lastValue);
+    snprintf(valueStr, sizeof(valueStr), "%.1f", lastValue);
   }
+  
+  // Calculate total width including value and units
+  display.setFont(FONT1);
+  int16_t ux, uy;
+  uint16_t uw, uh;
+  display.getTextBounds(units, 0, 0, &ux, &uy, &uw, &uh);
+  
+  // Calculate positions
+  int chartRight = x + xOffset + chartWidth;
+
+  int yadd = 20;
+  
+  // Draw title at left
+  display.setFont(FONT2);
+  display.setCursor(x + (rightAlign ? 75 : 5) - 5, y + yadd);
+  display.print(title);
+  
+  // Draw value right-aligned to chart edge
+  //display.setFont(FONT4);
+  int16_t vx, vy;
+  uint16_t vw, vh;
+  display.getTextBounds(valueStr, 0, 0, &vx, &vy, &vw, &vh);
+  display.setCursor(chartRight - uw - vw - 5, y + yadd);
   display.print(valueStr);
   
-  // Add units in smaller font
+  // Draw units right-aligned after value
   display.setFont(FONT1);
-  display.print(" ");
+  display.setCursor(chartRight - uw - 2, y + yadd);
   display.print(units);
   
   display.setFont();
@@ -498,7 +524,7 @@ void drawChartA() {
   drawSingleChart(153, 140, data, numReadings, "Pres", "mb", false);
   
   for(int i = 0; i < numReadings; i++) data[i] = Readings[i].bridgehum;
-  drawSingleChart(153, 273, data, numReadings, "Dewp", "%", false);
+  drawSingleChart(153, 273, data, numReadings, "Dewp", "", false);
 }
 
 void drawChartB() {
