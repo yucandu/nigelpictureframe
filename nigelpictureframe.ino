@@ -632,19 +632,35 @@ void startWifi() {
   Blynk.run();
   Blynk.virtualWrite(V115, vBat);
   Blynk.run();
-  if (numReadings > 2) {  // Need at least 3 readings
-    int startIdx = 2;  // Skip first two readings
-    float firstBat = Readings[startIdx].vBat;
-    float lastBat = Readings[numReadings-1].vBat;
-    float voltDiff = lastBat - firstBat;
+  if (numReadings > 2) {
+    float currentVoltage = Readings[numReadings-1].vBat;
+    int increases = 0;
+    int index = numReadings - 1;
+    float referenceVoltage = 0;
     
-    // Calculate hours between these points (5 min per reading)
-    float hours = ((numReadings - startIdx) * 5.0) / 60.0;  // Only count hours after startIdx
+    // Search backwards through array for second voltage increase
+    while (index >= 0 && increases < 2) {
+        if (Readings[index].vBat > currentVoltage + 0.0005) { // Small threshold to account for noise
+            increases++;
+            if (increases == 2) {
+                referenceVoltage = Readings[index].vBat;
+                break;
+            }
+        }
+        currentVoltage = Readings[index].vBat;
+        index--;
+    }
     
-    float dailyDrain = (voltDiff / hours) * 24.0;
-    Blynk.virtualWrite(V116, dailyDrain);
-    Blynk.run();
-  }
+    if (increases == 2) {
+        // Calculate time span between points (5 min per reading)
+        double hours = ((numReadings - 1 - index) * 5.0) / 60.0;
+        
+        // Calculate daily drain rate in millivolts (negative indicates drain)
+        double dailyDrain = ((Readings[numReadings-1].vBat - referenceVoltage) * 1000.0 / hours) * 24.0;
+        Blynk.virtualWrite(V116, dailyDrain);
+        Blynk.run();
+    }
+}
   Blynk.virtualWrite(V117, WiFi.RSSI());
   Blynk.run();
   Blynk.virtualWrite(V117, WiFi.RSSI());
