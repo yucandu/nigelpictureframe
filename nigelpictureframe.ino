@@ -104,7 +104,7 @@ float v41_value, v42_value, v62_value;
 RTC_DATA_ATTR bool firstrun = true;
 RTC_DATA_ATTR int runcount = 1000;
 RTC_DATA_ATTR int minutecount = 12;
-RTC_DATA_ATTR int page = 2;
+RTC_DATA_ATTR int page = 1;
 float abshum;
 float minVal = 3.9;
 float maxVal = 4.2;
@@ -123,6 +123,25 @@ float vBat;
 float temppool, pm25in, pm25out, bridgetemp, bridgehum, windspeed, winddir, windchill, windgust, humidex, bridgeco2, bridgeIrms, watts, kw, tempSHT, humSHT, co2SCD, presBME, neotemp, jojutemp, temptodraw;
 float voc_index;
 
+float calculateBatteryDrainRate(int N) {
+    if (numReadings < N) N = numReadings;
+    if (N < 2) return 0;
+
+    // Each reading is 5 minutes apart
+    float sumX = 0, sumY = 0, sumXY = 0, sumXX = 0;
+    int startIdx = maxArray - N;
+    for (int i = 0; i < N; i++) {
+        float x = i * 5.0 / 60.0; // hours since oldest reading
+        float y =Readings[startIdx+1].vBat ;
+        sumX += x;
+        sumY += y;
+        sumXY += x * y;
+        sumXX += x * x;
+    }
+    float slope = (N * sumXY - sumX * sumY) / (N * sumXX - sumX * sumX); // V/hour
+    float drainPerDay = slope * 1000.0 * 24.0; // mV per day
+    return drainPerDay;
+}
 
 BLYNK_WRITE(V41) {
   neotemp = param.asFloat();
@@ -336,7 +355,7 @@ void cbSyncTime(struct timeval *tv) { // callback function to show when NTP was 
 
 
 void initTime(String timezone) {
-  configTzTime(timezone.c_str(), "time.cloudflare.com", "pool.ntp.org", "time.nist.gov");
+  configTzTime(timezone.c_str(), "192.168.50.197");
 
  // while ((!isSetNtp) && (millis() < TIME_TIMEOUT)) {
  //       delay(250);
@@ -633,34 +652,23 @@ void startWifi() {
   Blynk.virtualWrite(V115, vBat);
   Blynk.run();
   if (numReadings > 2) {
-    float currentVoltage = Readings[numReadings-1].vBat;
-    int increases = 0;
-    int index = numReadings - 1;
-    float referenceVoltage = 0;
-    
-    // Search backwards through array for second voltage increase
-    while (index >= 0 && increases < 2) {
-        if (Readings[index].vBat > currentVoltage + 0.0005) { // Small threshold to account for noise
-            increases++;
-            if (increases == 2) {
-                referenceVoltage = Readings[index].vBat;
-                break;
-            }
-        }
-        currentVoltage = Readings[index].vBat;
-        index--;
+    float dailyDrain;
+    if (numReadings > 12) {
+      dailyDrain = calculateBatteryDrainRate(12); // Use last 12 readings (1 hour)
+      Blynk.virtualWrite(V116, dailyDrain);
+      Blynk.run();
     }
-    
-    if (increases == 2) {
-        // Calculate time span between points (5 min per reading)
-        double hours = ((numReadings - 1 - index) * 5.0) / 60.0;
-        
-        // Calculate daily drain rate in millivolts (negative indicates drain)
-        double dailyDrain = ((Readings[numReadings-1].vBat - referenceVoltage) * 1000.0 / hours) * 24.0;
-        Blynk.virtualWrite(V116, dailyDrain);
-        Blynk.run();
+    else
+    {
+      dailyDrain = calculateBatteryDrainRate(numReadings); // Use all readings
+      Blynk.virtualWrite(V116, dailyDrain);
+      Blynk.run();
     }
-}
+    Blynk.virtualWrite(V116, dailyDrain);
+    Blynk.run();
+    Blynk.virtualWrite(V116, dailyDrain);
+    Blynk.run();
+  }
   Blynk.virtualWrite(V117, WiFi.RSSI());
   Blynk.run();
   Blynk.virtualWrite(V117, WiFi.RSSI());
@@ -768,8 +776,7 @@ String convertUTCtoEST(const char* utcTimeStr) {
     time_t eventTime = mktime(&timeinfo);
 
     // Adjust to local EST/EDT time
-    time_t localTime = eventTime + gmtOffset_sec + daylightOffset_sec;
-    localtime_r(&localTime, &timeinfo);
+    localtime_r(&eventTime, &timeinfo);
 
     // Format time into 12-hour format with AM/PM
     char buffer[16];
@@ -1220,8 +1227,15 @@ void displayEvents() {
           t.tm_sec = 0;
           t.tm_isdst = -1;
           
+          // Save current TZ
+          char *old_tz = getenv("TZ");
+          setenv("TZ", "UTC", 1);
+          tzset();
           time_t utc = mktime(&t);
-          utc += gmtOffset_sec + daylightOffset_sec;
+          // Restore TZ
+          if (old_tz) setenv("TZ", old_tz, 1); else unsetenv("TZ");
+          tzset();
+
           localtime_r(&utc, &t);
 
           char dateBuffer[40];
