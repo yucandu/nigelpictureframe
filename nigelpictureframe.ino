@@ -3,9 +3,7 @@
 #include <Adafruit_AHTX0.h>
 #include <Adafruit_BMP280.h>
 #include <WiFi.h>
-//#include <AsyncTCP.h>
-//#include <ESPAsyncWebServer.h>
-//#include <AsyncElegantOTA.h>
+
 #include <ArduinoOTA.h>
 #include <HTTPClient.h>
 #include <WiFiClientSecure.h>
@@ -28,11 +26,7 @@ WidgetTerminal terminal(V10);
 #include "driver/periph_ctrl.h"
 int GPIO_reason;
 #include "esp_sleep.h"
-//#include <GxEPD2_4G_4G.h>
-//#include <GxEPD2_4G_BW.h>
-// Include fonts and define them
-//#include <Fonts/Roboto_Condensed_12.h>
-//#include <Fonts/Open_Sans_Condensed_Bold_48.h>
+
 #define GxEPD2_DRIVER_CLASS GxEPD2_420_GDEY042T81 // GDEY042T81 400x300, SSD1683 (no inking)
 #define FONT1 &FreeSans9pt7b
 #define FONT2 &FreeSansBold12pt7b
@@ -76,7 +70,7 @@ typedef struct {
     int hour;
     // Pool and Bridge sensors
     float temppool;
-    float bridgehum;
+    float humidex;
     int bridgeco2;
     float kw;
     float windspeed;
@@ -89,6 +83,7 @@ typedef struct {
     float pressure;
     int winddir;
     float vBat;
+    float inhumidex;
 } sensorReadings;
 
 // Add RTC_DATA_ATTR to preserve across deep sleep
@@ -100,7 +95,7 @@ const char* ntpServer = "pool.ntp.org";
 const long gmtOffset_sec = -18000;  //Replace with your GMT offset (secs)
 const int daylightOffset_sec = 0;   //Replace with your daylight offset (secs)
 float t, h, pres, barx;
-float v41_value, v42_value, v62_value;
+
 RTC_DATA_ATTR bool firstrun = true;
 RTC_DATA_ATTR int runcount = 1000;
 RTC_DATA_ATTR int minutecount = 12;
@@ -119,28 +114,24 @@ const char* v41_pin = "V41";
 const char* v62_pin = "V62";
 bool precip = false;
 float vBat;
-
+float inhumidex, indewp;
 float temppool, pm25in, pm25out, bridgetemp, bridgehum, windspeed, winddir, windchill, windgust, humidex, bridgeco2, bridgeIrms, watts, kw, tempSHT, humSHT, co2SCD, presBME, neotemp, jojutemp, temptodraw;
 float voc_index;
 
-float calculateBatteryDrainRate(int N) {
-    if (numReadings < N) N = numReadings;
-    if (N < 2) return 0;
+float calculateADCStepRate(sensorReadings vBatArray[], int count) {
+    // Find highest and lowest voltage in the array
+    float highest = vBatArray[0].vBat;
+    float lowest = vBatArray[0].vBat;
 
-    // Each reading is 5 minutes apart
-    float sumX = 0, sumY = 0, sumXY = 0, sumXX = 0;
-    int startIdx = maxArray - N;
-    for (int i = 0; i < N; i++) {
-        float x = i * 5.0 / 60.0; // hours since oldest reading
-        float y =Readings[startIdx+1].vBat ;
-        sumX += x;
-        sumY += y;
-        sumXY += x * y;
-        sumXX += x * x;
+    for (int i = 1; i < count; i++) {
+        if (vBatArray[i].vBat > highest) highest = vBatArray[i].vBat;
+        if (vBatArray[i].vBat < lowest) lowest = vBatArray[i].vBat;
     }
-    float slope = (N * sumXY - sumX * sumY) / (N * sumXX - sumX * sumX); // V/hour
-    float drainPerDay = slope * 1000.0 * 24.0; // mV per day
-    return drainPerDay;
+    
+    float totalDrop = highest - lowest;
+    float totalDays = (count - 1) * 5.0 / (60.0 * 24.0);
+    
+    return totalDrop / totalDays;
 }
 
 BLYNK_WRITE(V41) {
@@ -335,6 +326,7 @@ BLYNK_CONNECTED() {
 
     Blynk.syncVirtual(V61);  // temppool
     Blynk.syncVirtual(V63);  // bridgehum
+    Blynk.syncVirtual(V65);  // bridgehum
     Blynk.syncVirtual(V67);  // pm25out
     Blynk.syncVirtual(V71);  // pm25in
     Blynk.syncVirtual(V77);  // bridgeco2
@@ -527,23 +519,23 @@ void drawChartA() {
   
   // Left column (150px wide, ~133px height each)
   for(int i = 0; i < numReadings; i++) data[i] = Readings[i].min_value;
-  drawSingleChart(3, 7, data, numReadings, "Out", "°C");
+  drawSingleChart(3, 7, data, numReadings, "Out ", "°C");
   
   for(int i = 0; i < numReadings; i++) data[i] = Readings[i].windspeed;
-  drawSingleChart(3, 140, data, numReadings, "Wind", "k");
+  drawSingleChart(3, 140, data, numReadings, "Wind ", "k");
   
   for(int i = 0; i < numReadings; i++) data[i] = Readings[i].pm25out;
-  drawSingleChart(3, 273, data, numReadings, "PM2.5", "ug");
+  drawSingleChart(3, 273, data, numReadings, "PM ", "ug");
   
   // Right column
   for(int i = 0; i < numReadings; i++) data[i] = Readings[i].temppool;
-  drawSingleChart(153, 7, data, numReadings, "Pool", "°C", false);
+  drawSingleChart(153, 7, data, numReadings, "Pool ", "°C", false);
   
   for(int i = 0; i < numReadings; i++) data[i] = Readings[i].pressure;
-  drawSingleChart(153, 140, data, numReadings, "Pres", "mb", false);
+  drawSingleChart(153, 140, data, numReadings, "Pres ", "mb", false);
   
-  for(int i = 0; i < numReadings; i++) data[i] = Readings[i].bridgehum;
-  drawSingleChart(153, 273, data, numReadings, "Dewp", "", false);
+  for(int i = 0; i < numReadings; i++) data[i] = Readings[i].humidex;
+  drawSingleChart(153, 273, data, numReadings, "Hmdx ", "", false);
 }
 
 void drawChartB() {
@@ -653,27 +645,19 @@ void startWifi() {
   Blynk.run();
   if (numReadings > 2) {
     float dailyDrain;
-    if (numReadings > 12) {
-      dailyDrain = calculateBatteryDrainRate(12); // Use last 12 readings (1 hour)
-      Blynk.virtualWrite(V116, dailyDrain);
-      Blynk.run();
-    }
-    else
-    {
-      dailyDrain = calculateBatteryDrainRate(numReadings); // Use all readings
-      Blynk.virtualWrite(V116, dailyDrain);
-      Blynk.run();
-    }
+    dailyDrain = calculateADCStepRate(Readings, numReadings); // Use last 12 readings (1 hour)
     Blynk.virtualWrite(V116, dailyDrain);
     Blynk.run();
     Blynk.virtualWrite(V116, dailyDrain);
     Blynk.run();
+
   }
   Blynk.virtualWrite(V117, WiFi.RSSI());
   Blynk.run();
-  Blynk.virtualWrite(V117, WiFi.RSSI());
+  Blynk.virtualWrite(V118, inhumidex);
   Blynk.run();
-
+  Blynk.virtualWrite(V118, inhumidex);
+  Blynk.run();
   struct tm timeinfo;
   getLocalTime(&timeinfo);
   time_t now = time(NULL);
@@ -1420,7 +1404,7 @@ void displayIcons() {
   
   display.setFont(FONT4);
   display.setCursor(col2, startY + rowHeight * 2);
-  snprintf(buffer, sizeof(buffer), "%.1f", bridgehum);
+  snprintf(buffer, sizeof(buffer), "%.1f", humidex);
   display.print(buffer);
   display.setFont(FONT1);
   //display.print("%");
@@ -1519,7 +1503,7 @@ void takeSamples() {
   Readings[idx].hour = timeinfo.tm_hour;
   Readings[idx].min_value = min_value;
   Readings[idx].temppool = temppool;
-  Readings[idx].bridgehum = bridgehum;
+  Readings[idx].humidex = humidex;
   Readings[idx].pm25out = pm25out;
   Readings[idx].pm25in = pm25in;
   Readings[idx].bridgeco2 = bridgeco2;
@@ -1531,7 +1515,7 @@ void takeSamples() {
   Readings[idx].in_hum = h;
   Readings[idx].pressure = pres;
   Readings[idx].vBat = vBat;
-  
+  Readings[idx].inhumidex = inhumidex;
   numReadings++;  // Always increment after adding new reading
 }
 
@@ -1567,7 +1551,8 @@ void setup() {
   h = humidity.relative_humidity;
   pres = bmp.readPressure() / 100.0;
   abshum = (6.112 * pow(2.71828, ((17.67 * temp.temperature) / (temp.temperature + 243.5))) * humidity.relative_humidity * 2.1674) / (273.15 + temp.temperature);
-
+  indewp = t - ((100 - h)/5); //calculate dewpoint
+  inhumidex = t + 0.5555 * (6.11 * pow(2.71828, 5417.7530*( (1/273.16) - (1/(273.15 + indewp)) ) ) - 10); //calculate humidex using Environment Canada formula
   display.init(115200, false, 10, false);
   display.setRotation(1);
   display.setFont();
@@ -1632,6 +1617,10 @@ void setup() {
             display.display(true);
             gotosleep();
             break;
+        case 5: // <--- Add this case for Humidexes
+            drawHumidexes();
+            gotosleep();
+            break;
       }
     }
   }
@@ -1639,19 +1628,83 @@ void setup() {
 
 
 int selection = 0;
-int numOptions = 5;  // Increased from 4 to 5
+int numOptions = 6;  // Increased from 4 to 5
 const char* menuOptions[] = {
     "Weather & Calendar",
     "Outdoor Charts",
     "Indoor Charts",
     "Display Icons",
-    "Start OTA"
+    "Start OTA",
+    "Humidexes" // New option
 };
 
 // Add these globals at top with other variables
 //RTC_DATA_ATTR bool menuActive = false;
 unsigned long lastButtonCheck = 0;
 const int buttonDebounce = 200;
+
+void drawLargeChart(int x, int y, int width, int height, float data[], int count, const char* title, const char* units, float min, float max) {
+    float lastValue = 0;
+    for (int i = 0; i < count; i++) {
+        if (data[i] != 0) lastValue = data[i];
+    }
+    if (max - min < 0.001) max = min + 0.001;
+
+    // Draw title
+    display.setFont(FONT2);
+    int16_t tx, ty; uint16_t tw, th;
+    display.getTextBounds(title, 0, 0, &tx, &ty, &tw, &th);
+    display.setCursor(x + 5, y + th + 2);
+    display.print(title);
+
+    // Draw value and units at right
+    char valueStr[10];
+    snprintf(valueStr, sizeof(valueStr), "%.1f", lastValue);
+    display.setFont(FONT1);
+    int16_t vx, vy; uint16_t vw, vh;
+    display.getTextBounds(valueStr, 0, 0, &vx, &vy, &vw, &vh);
+    display.setCursor(x + width - vw - 30, y + th + 2);
+    display.print(valueStr);
+    display.setCursor(x + width - 25, y + th + 2);
+    display.print(units);
+
+    // Draw min/max labels
+    char label[10];
+    snprintf(label, sizeof(label), "%.1f", max);
+    display.setCursor(x + 2, y + th + 18);
+    display.print(label);
+    snprintf(label, sizeof(label), "%.1f", min);
+    display.setCursor(x + 2, y + height - 5);
+    display.print(label);
+
+    // Draw chart border
+    int chartY = y + th + 10;
+    int chartHeight = height - (th + 15);
+    display.drawRect(x + 25, chartY, width - 30, chartHeight, BLACK);
+
+    // Draw data line and fill
+    int prevX = 0, prevY = 0;
+    bool first = true;
+    int startX = x + 25;
+    int startY = chartY + chartHeight;
+    for (int i = 0; i < count; i++) {
+        if (data[i] == 0) continue;
+        int plotX = startX + (i * (width - 30) / count);
+        int plotY = chartY + ((max - data[i]) * chartHeight / (max - min));
+        if (!first) {
+            display.drawLine(prevX, prevY, plotX, plotY, BLACK);
+            display.fillTriangle(prevX, prevY, plotX, plotY, plotX, startY, BLACK);
+            display.fillTriangle(prevX, prevY, prevX, startY, plotX, startY, BLACK);
+        }
+        prevX = plotX;
+        prevY = plotY;
+        first = false;
+    }
+    // Fill last triangle if needed
+    if (!first) {
+        display.fillTriangle(prevX, prevY, startX + width - 30, startY, prevX, startY, BLACK);
+    }
+}
 
 // Modify displayMenu() to just draw the menu
 void displayMenu() {
@@ -1692,6 +1745,24 @@ void displayMenu() {
   display.displayWindow(x-1, y-1, windowWidth+2, windowHeight+2);
 }
 
+void drawHumidexes() {
+    float humidexData[maxArray], inhumidexData[maxArray];
+    float min = 1e6, max = -1e6;
+    for (int i = 0; i < numReadings; i++) {
+        humidexData[i] = Readings[i].humidex;
+        inhumidexData[i] = Readings[i].inhumidex;
+        if (humidexData[i] != 0 && humidexData[i] < min) min = humidexData[i];
+        if (inhumidexData[i] != 0 && inhumidexData[i] < min) min = inhumidexData[i];
+        if (humidexData[i] != 0 && humidexData[i] > max) max = humidexData[i];
+        if (inhumidexData[i] != 0 && inhumidexData[i] > max) max = inhumidexData[i];
+    }
+    if (max - min < 0.001) max = min + 0.001;
+    display.fillScreen(GxEPD_WHITE);
+    drawLargeChart(0, 0, DISP_WIDTH, DISP_HEIGHT / 2, humidexData, numReadings, "Outdoor Humidex", "", min, max);
+    drawLargeChart(0, DISP_HEIGHT / 2, DISP_WIDTH, DISP_HEIGHT / 2, inhumidexData, numReadings, "Indoor Humidex", "", min, max);
+    display.display(true);
+}
+
 void updateMenu() {
   every(50){
       if(digitalRead(0)) {
@@ -1707,8 +1778,12 @@ void updateMenu() {
       } 
 
       if(digitalRead(1)) {
-          if(selection == 4) {  // Changed from 4 to 3 since array is 0-based
+          if(selection == 4) {  // Start OTA
               startWebserver();
+          } else if(selection == 5) { // New Humidexes option
+              page = 5; // Set page to 5 for Humidexes
+              drawHumidexes();
+              gotosleep();
           } else {
               display.clearScreen();
               page = selection + 1;  // Add 1 to convert from 0-based to 1-based
@@ -1728,9 +1803,6 @@ void updateMenu() {
                     display.display(true);
                     break;
                 case 4:
-                    displayIcons();
-                    startWifi();
-                    takeSamples();
                     displayIcons();
                     display.display(true);
                     break;
