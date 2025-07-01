@@ -738,7 +738,7 @@ double mapf(float x, float in_min, float in_max, float out_min, float out_max) {
   return (x - in_min) * (out_max - out_min) / (in_max - in_min) + out_min;
 }
 const char* weatherURL = "https://api.weatherapi.com/v1/forecast.json?key=x&q=x%2CCA&days=3";
-const char* calendarURL = "https://script.googleusercontent.com/macros/echo?user_content_key=x-x-x-x&lib=x";
+const char* calendarURL = "https://script.googleusercontent.com/macros/echo?user_content_key=x-x-x&lib=x";
 
 String convertUTCtoEST(const char* utcTimeStr) {
     struct tm timeinfo;
@@ -1643,68 +1643,6 @@ const char* menuOptions[] = {
 unsigned long lastButtonCheck = 0;
 const int buttonDebounce = 200;
 
-void drawLargeChart(int x, int y, int width, int height, float data[], int count, const char* title, const char* units, float min, float max) {
-    float lastValue = 0;
-    for (int i = 0; i < count; i++) {
-        if (data[i] != 0) lastValue = data[i];
-    }
-    if (max - min < 0.001) max = min + 0.001;
-
-    // Draw title
-    display.setFont(FONT2);
-    int16_t tx, ty; uint16_t tw, th;
-    display.getTextBounds(title, 0, 0, &tx, &ty, &tw, &th);
-    display.setCursor(x + 5, y + th + 2);
-    display.print(title);
-
-    // Draw value and units at right
-    char valueStr[10];
-    snprintf(valueStr, sizeof(valueStr), "%.1f", lastValue);
-    display.setFont(FONT1);
-    int16_t vx, vy; uint16_t vw, vh;
-    display.getTextBounds(valueStr, 0, 0, &vx, &vy, &vw, &vh);
-    display.setCursor(x + width - vw - 30, y + th + 2);
-    display.print(valueStr);
-    display.setCursor(x + width - 25, y + th + 2);
-    display.print(units);
-
-    // Draw min/max labels
-    char label[10];
-    snprintf(label, sizeof(label), "%.1f", max);
-    display.setCursor(x + 2, y + th + 18);
-    display.print(label);
-    snprintf(label, sizeof(label), "%.1f", min);
-    display.setCursor(x + 2, y + height - 5);
-    display.print(label);
-
-    // Draw chart border
-    int chartY = y + th + 10;
-    int chartHeight = height - (th + 15);
-    display.drawRect(x + 25, chartY, width - 30, chartHeight, BLACK);
-
-    // Draw data line and fill
-    int prevX = 0, prevY = 0;
-    bool first = true;
-    int startX = x + 25;
-    int startY = chartY + chartHeight;
-    for (int i = 0; i < count; i++) {
-        if (data[i] == 0) continue;
-        int plotX = startX + (i * (width - 30) / count);
-        int plotY = chartY + ((max - data[i]) * chartHeight / (max - min));
-        if (!first) {
-            display.drawLine(prevX, prevY, plotX, plotY, BLACK);
-            display.fillTriangle(prevX, prevY, plotX, plotY, plotX, startY, BLACK);
-            display.fillTriangle(prevX, prevY, prevX, startY, plotX, startY, BLACK);
-        }
-        prevX = plotX;
-        prevY = plotY;
-        first = false;
-    }
-    // Fill last triangle if needed
-    if (!first) {
-        display.fillTriangle(prevX, prevY, startX + width - 30, startY, prevX, startY, BLACK);
-    }
-}
 
 // Modify displayMenu() to just draw the menu
 void displayMenu() {
@@ -1757,9 +1695,104 @@ void drawHumidexes() {
         if (inhumidexData[i] != 0 && inhumidexData[i] > max) max = inhumidexData[i];
     }
     if (max - min < 0.001) max = min + 0.001;
+
     display.fillScreen(GxEPD_WHITE);
-    drawLargeChart(0, 0, DISP_WIDTH, DISP_HEIGHT / 2, humidexData, numReadings, "Outdoor Humidex", "", min, max);
-    drawLargeChart(0, DISP_HEIGHT / 2, DISP_WIDTH, DISP_HEIGHT / 2, inhumidexData, numReadings, "Indoor Humidex", "", min, max);
+
+    // Chart area
+    int marginLeft = 40, marginRight = 20, marginTop = 40, marginBottom = 40;
+    int chartWidth = DISP_WIDTH - marginLeft - marginRight;
+    int chartHeight = DISP_HEIGHT - marginTop - marginBottom;
+    int chartX = marginLeft, chartY = marginTop;
+
+    // Draw axes
+    display.drawRect(chartX, chartY, chartWidth, chartHeight, BLACK);
+
+    // Draw Y axis labels (min and max)
+    display.setFont(FONT1);
+    char label[10];
+    snprintf(label, sizeof(label), "%.1f", max);
+    display.setCursor(2, chartY + 10);
+    display.print(label);
+    snprintf(label, sizeof(label), "%.1f", min);
+    display.setCursor(2, chartY + chartHeight - 2);
+    display.print(label);
+
+    // Draw title (smaller font)
+    display.setFont(FONT1);
+    display.setCursor(marginLeft, 28);
+    display.print("Indoor & Outdoor Humidex");
+
+    // Draw legend
+    display.setFont(FONT1);
+    int legendY = DISP_HEIGHT - marginBottom + 10;
+    display.drawCircle(marginLeft + 10, legendY, 4, BLACK);
+    display.setCursor(marginLeft + 20, legendY + 4);
+    display.print("Outdoor");
+    display.drawLine(marginLeft + 90, legendY + 4, marginLeft + 110, legendY + 4, BLACK);
+    display.setCursor(marginLeft + 115, legendY + 4);
+    display.print("Indoor");
+
+    // Plot points
+    int prevIndoorX = 0, prevIndoorY = 0;
+    bool firstIndoor = true;
+    int lastOutdoorX = 0, lastOutdoorY = 0, lastIndoorX = 0, lastIndoorY = 0;
+    float lastOutdoorVal = 0, lastIndoorVal = 0;
+
+    for (int i = 0; i < numReadings; i++) {
+        // X position for this point
+        int plotX = chartX + (i * chartWidth / (numReadings - 1));
+        // Indoor line
+        if (inhumidexData[i] != 0) {
+            int plotY = chartY + ((max - inhumidexData[i]) * chartHeight / (max - min));
+            if (!firstIndoor) {
+                display.drawLine(prevIndoorX, prevIndoorY, plotX, plotY, BLACK);
+            }
+            prevIndoorX = plotX;
+            prevIndoorY = plotY;
+            firstIndoor = false;
+            lastIndoorX = plotX;
+            lastIndoorY = plotY;
+            lastIndoorVal = inhumidexData[i];
+        }
+        // Outdoor circles
+        if (humidexData[i] != 0) {
+            int plotY = chartY + ((max - humidexData[i]) * chartHeight / (max - min));
+            display.drawCircle(plotX, plotY, 4, BLACK);
+            lastOutdoorX = plotX;
+            lastOutdoorY = plotY;
+            lastOutdoorVal = humidexData[i];
+        }
+    }
+
+    // Draw value labels next to last points (to the left, with a box)
+    display.setFont(FONT1);
+    if (lastOutdoorVal != 0) {
+        char valStr[10];
+        snprintf(valStr, sizeof(valStr), "%.1f", lastOutdoorVal);
+        int16_t x1, y1;
+        uint16_t w, h;
+        display.getTextBounds(valStr, 0, 0, &x1, &y1, &w, &h);
+        int boxX = lastOutdoorX - w - 14; // 8px gap + 6px padding
+        int boxY = lastOutdoorY - h / 2 - 2;
+        display.fillRect(boxX, boxY, w + 8, h + 4, WHITE);
+        display.drawRect(boxX, boxY, w + 8, h + 4, BLACK);
+        display.setCursor(boxX + 4, boxY + h + 1);
+        display.print(valStr);
+    }
+    if (lastIndoorVal != 0) {
+        char valStr[10];
+        snprintf(valStr, sizeof(valStr), "%.1f", lastIndoorVal);
+        int16_t x1, y1;
+        uint16_t w, h;
+        display.getTextBounds(valStr, 0, 0, &x1, &y1, &w, &h);
+        int boxX = lastIndoorX - w - 14; // 8px gap + 6px padding
+        int boxY = lastIndoorY - h / 2 - 2;
+        display.fillRect(boxX, boxY, w + 8, h + 4, WHITE);
+        display.drawRect(boxX, boxY, w + 8, h + 4, BLACK);
+        display.setCursor(boxX + 4, boxY + h + 1);
+        display.print(valStr);
+    }
+
     display.display(true);
 }
 
