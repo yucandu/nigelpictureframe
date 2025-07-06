@@ -118,20 +118,41 @@ float inhumidex, indewp;
 float temppool, pm25in, pm25out, bridgetemp, bridgehum, windspeed, winddir, windchill, windgust, humidex, bridgeco2, bridgeIrms, watts, kw, tempSHT, humSHT, co2SCD, presBME, neotemp, jojutemp, temptodraw;
 float voc_index;
 
-float calculateADCStepRate(sensorReadings vBatArray[], int count) {
-    // Find highest and lowest voltage in the array
-    float highest = vBatArray[0].vBat;
-    float lowest = vBatArray[0].vBat;
-
-    for (int i = 1; i < count; i++) {
-        if (vBatArray[i].vBat > highest) highest = vBatArray[i].vBat;
-        if (vBatArray[i].vBat < lowest) lowest = vBatArray[i].vBat;
+double calculateADCStepRate(sensorReadings vBatArray[], int counts) {
+    // Find unique voltage levels and when they first occur
+    float firstVoltage = vBatArray[0].vBat;
+    float lastVoltage = vBatArray[counts - 1].vBat;
+    
+    // Find the last occurrence of the first voltage
+    int lastOccurrenceOfFirst = 0;
+    for (int i = 0; i < counts; i++) {
+        if (vBatArray[i].vBat == firstVoltage) {
+            lastOccurrenceOfFirst = i;
+        }
     }
     
-    float totalDrop = highest - lowest;
-    float totalDays = (count - 1) * 5.0 / (60.0 * 24.0);
+    // Find the first occurrence of the last voltage
+    int firstOccurrenceOfLast = counts - 1;
+    for (int i = 0; i < counts; i++) {
+        if (vBatArray[i].vBat == lastVoltage) {
+            firstOccurrenceOfLast = i;
+            break;
+        }
+    }
     
-    return totalDrop / totalDays;
+    // Calculate the actual time span of the transition
+    float timeSpanMinutes = (firstOccurrenceOfLast - lastOccurrenceOfFirst) * 5.0;
+    float timeSpanDays = timeSpanMinutes / (60.0 * 24.0);
+    
+    // Calculate voltage change
+    float voltageChange = lastVoltage - firstVoltage;
+    
+    // Avoid division by zero
+    if (timeSpanDays == 0) {
+        return 0.0;
+    }
+    
+    return voltageChange / timeSpanDays;
 }
 
 BLYNK_WRITE(V41) {
@@ -644,8 +665,9 @@ void startWifi() {
   Blynk.virtualWrite(V115, vBat);
   Blynk.run();
   if (numReadings > 2) {
-    float dailyDrain;
+    double dailyDrain;
     dailyDrain = calculateADCStepRate(Readings, numReadings); // Use last 12 readings (1 hour)
+    dailyDrain = dailyDrain * 1000; // Convert to mV
     Blynk.virtualWrite(V116, dailyDrain);
     Blynk.run();
     Blynk.virtualWrite(V116, dailyDrain);
@@ -738,7 +760,7 @@ double mapf(float x, float in_min, float in_max, float out_min, float out_max) {
   return (x - in_min) * (out_max - out_min) / (in_max - in_min) + out_min;
 }
 const char* weatherURL = "https://api.weatherapi.com/v1/forecast.json?key=x&q=x%2CCA&days=3";
-const char* calendarURL = "https://script.googleusercontent.com/macros/echo?user_content_key=x-x-x&lib=x";
+const char* calendarURL = "https://script.googleusercontent.com/macros/echo?user_content_key=5RJgG2h-x-x-x&lib=x";
 
 String convertUTCtoEST(const char* utcTimeStr) {
     struct tm timeinfo;
@@ -1530,29 +1552,33 @@ float readChannel(ADS1115_MUX channel) {
   return voltage;
 }
 
+void initSensors() {
+        Wire.begin();
+        adc.init();
+        adc.setVoltageRange_mV(ADS1115_RANGE_4096);
+        vBat = readChannel(ADS1115_COMP_0_GND) * 2.0;
+        aht.begin();
+        bmp.begin();
+        bmp.setSampling(Adafruit_BMP280::MODE_FORCED,  /* Operating Mode. */
+                        Adafruit_BMP280::SAMPLING_X2,  /* Temp. oversampling */
+                        Adafruit_BMP280::SAMPLING_X16, /* Pressure oversampling */
+                        Adafruit_BMP280::FILTER_X16,   /* Filtering. */
+                        Adafruit_BMP280::STANDBY_MS_500);
+        bmp.takeForcedMeasurement();
+
+        aht.getEvent(&humidity, &temp);
+        t = temp.temperature;
+        h = humidity.relative_humidity;
+        pres = bmp.readPressure() / 100.0;
+        abshum = (6.112 * pow(2.71828, ((17.67 * temp.temperature) / (temp.temperature + 243.5))) * humidity.relative_humidity * 2.1674) / (273.15 + temp.temperature);
+        indewp = t - ((100 - h)/5); //calculate dewpoint
+        inhumidex = t + 0.5555 * (6.11 * pow(2.71828, 5417.7530*( (1/273.16) - (1/(273.15 + indewp)) ) ) - 10); //calculate humidex using Environment Canada formula
+}
+
 void setup() {
-  Wire.begin();
-  adc.init();
-  adc.setVoltageRange_mV(ADS1115_RANGE_4096);
-  vBat = readChannel(ADS1115_COMP_0_GND) * 2.0;
+
   GPIO_reason = log(esp_sleep_get_gpio_wakeup_status()) / log(2);
 
-  aht.begin();
-  bmp.begin();
-  bmp.setSampling(Adafruit_BMP280::MODE_FORCED,  /* Operating Mode. */
-                  Adafruit_BMP280::SAMPLING_X2,  /* Temp. oversampling */
-                  Adafruit_BMP280::SAMPLING_X16, /* Pressure oversampling */
-                  Adafruit_BMP280::FILTER_X16,   /* Filtering. */
-                  Adafruit_BMP280::STANDBY_MS_500);
-  bmp.takeForcedMeasurement();
-
-  aht.getEvent(&humidity, &temp);
-  t = temp.temperature;
-  h = humidity.relative_humidity;
-  pres = bmp.readPressure() / 100.0;
-  abshum = (6.112 * pow(2.71828, ((17.67 * temp.temperature) / (temp.temperature + 243.5))) * humidity.relative_humidity * 2.1674) / (273.15 + temp.temperature);
-  indewp = t - ((100 - h)/5); //calculate dewpoint
-  inhumidex = t + 0.5555 * (6.11 * pow(2.71828, 5417.7530*( (1/273.16) - (1/(273.15 + indewp)) ) ) - 10); //calculate humidex using Environment Canada formula
   display.init(115200, false, 10, false);
   display.setRotation(1);
   display.setFont();
@@ -1562,7 +1588,6 @@ void setup() {
   pinMode(3, INPUT);
 
 
-  delay(10);
 
   if (runcount >= 1000) {
     display.clearScreen();
@@ -1576,17 +1601,20 @@ void setup() {
     unsigned long startTime = millis();
     while (digitalRead(0) == HIGH) {
         if (digitalRead(1) == HIGH && digitalRead(3) == HIGH) {
-            delay(1500);
+            delay(100);
             if (digitalRead(0) == HIGH && digitalRead(1) == HIGH && digitalRead(3) == HIGH) {
+                
                 displayMenu();
+                initSensors();
                 return;
             }
         }
         if (millis() - startTime > 5000) break;
     }
     gotosleep();
-  } else {    // When waking from timer or first boot
-      startWifi();
+  } else {    
+        initSensors();
+        startWifi();
       if (!buttonstart) {
       takeSamples();
       
@@ -1726,8 +1754,22 @@ void drawHumidexes() {
     display.setFont(FONT1);
     int legendY = DISP_HEIGHT - marginBottom + 10;
     display.drawCircle(marginLeft + 10, legendY, 4, BLACK);
-    display.setCursor(marginLeft + 20, legendY + 4);
-    display.print("Outdoor");
+
+    // Draw black background for "Outdoor" label
+    int legendLabelX = marginLeft + 20;
+    int legendLabelY = legendY + 4;
+    const char* legendText = "Outdoor";
+    int16_t lx, ly;
+    uint16_t lw, lh;
+    display.getTextBounds(legendText, legendLabelX, legendLabelY, &lx, &ly, &lw, &lh);
+    display.fillRect(lx - 2, legendLabelY - lh + 2, lw + 4, lh + 4, BLACK);
+
+    // Invert "Outdoor" label
+    display.setTextColor(WHITE, BLACK);
+    display.setCursor(legendLabelX, legendLabelY);
+    display.print(legendText);
+    display.setTextColor(BLACK, WHITE); // Restore
+
     display.drawLine(marginLeft + 90, legendY + 4, marginLeft + 110, legendY + 4, BLACK);
     display.setCursor(marginLeft + 115, legendY + 4);
     display.print("Indoor");
@@ -1774,10 +1816,12 @@ void drawHumidexes() {
         display.getTextBounds(valStr, 0, 0, &x1, &y1, &w, &h);
         int boxX = lastOutdoorX - w - 14; // 8px gap + 6px padding
         int boxY = lastOutdoorY - h / 2 - 2;
-        display.fillRect(boxX, boxY, w + 8, h + 4, WHITE);
+        display.fillRect(boxX, boxY, w + 8, h + 4, BLACK); // Black background
         display.drawRect(boxX, boxY, w + 8, h + 4, BLACK);
+        display.setTextColor(WHITE, BLACK); // Invert text
         display.setCursor(boxX + 4, boxY + h + 1);
         display.print(valStr);
+        display.setTextColor(BLACK, WHITE); // Restore
     }
     if (lastIndoorVal != 0) {
         char valStr[10];
@@ -1851,4 +1895,5 @@ void updateMenu() {
 void loop() {
     if (WiFi.status() == WL_CONNECTED) {ArduinoOTA.handle();}
     updateMenu();
+    if (millis() > 300000) {gotosleep();}  // If no button pressed for 30 seconds, go to sleep
 }
